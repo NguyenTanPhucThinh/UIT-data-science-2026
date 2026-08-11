@@ -1,0 +1,5 @@
+# Git LFS configuration for large datasets
+data/processed/corpus.jsonl filter=lfs diff=lfs merge=lfs -text
+data/raw/selected-contexts.zip filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+*.jsonl filter=lfs diff=lfs merge=lfs -text

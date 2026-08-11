@@ -23,3 +23,33 @@ outputs/
 # OS
 .DS_Store
 Thumbs.db
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data directory rules
+data/raw/selected-contexts/
+data/scratch_analysis.py
+data/inspect_empty_docs.py
+data/test_tok.py
+data/test_vncorenlp.py
+
+# Downloaded models & model weights
+models/
+
+# Large generated files (Tracked via Git LFS in .gitattributes)
+
+# Environments & IDE
+.venv/
+env/
+venv/
+ENV/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
