@@ -192,10 +192,6 @@ def run_phase2():
 Moving on to **Phase 3: Exploratory Data Analysis (EDA)**.
 """
     
-    report_path = DOCS_DIR / 'preprocessing_report.md'
-    with open(report_path, 'w', encoding='utf-8') as fh:
-        fh.write(report_content)
-    print(f"\nGenerated report: {report_path}")
     print("=== PHASE 2 COMPLETED SUCCESSFULLY ===")
 
 if __name__ == '__main__':

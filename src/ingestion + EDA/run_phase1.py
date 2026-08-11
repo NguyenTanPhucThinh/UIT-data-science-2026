@@ -138,10 +138,6 @@ Inferred document types from title, URL path, and header text:
 3. **Metadata Extraction**: Parse section markers (Điều, Khoản, Mục, Chương) into explicit chunk attributes.
 """
 
-    report_path = 'docs/data_audit_report.md'
-    with open(report_path, 'w', encoding='utf-8') as fh:
-        fh.write(report_content)
-    print(f"\nGenerated audit report: {report_path}")
     print("=== PHASE 1 COMPLETED SUCCESSFULLY ===")
 
 if __name__ == '__main__':
