@@ -1,0 +1,25 @@
+# Môi trường ảo Python
+.venv/
+venv/
+env/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Model checkpoint đã fine-tune (thường rất nặng, không nên commit lên git)
+models/
+
+# Output/artifact sinh ra khi chạy script (predictions, report, embedding cache...)
+outputs/
+
+# Biến môi trường thật (chỉ .env.example.txt mới nên commit)
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -10,6 +10,10 @@ Module đánh giá chất lượng hệ thống Task 1 - LegalIR (phụ trách: 
   (`data/raw/train.json`), in ra Recall/Precision trung bình + danh sách câu hỏi tệ nhất để debug.
 - `validate_submission.py` — CLI: kiểm tra file `submission.json` có đúng định dạng/ràng buộc
   BTC yêu cầu TRƯỚC KHI đóng gói nộp bài (tránh bị hệ thống từ chối chấm).
+- `baseline_retrieval.py` — CLI retrieval "brute-force" (chỉ embedding + cosine similarity trên
+  toàn corpus, KHÔNG BM25/hybrid/rerank) để đo Recall/Precision MỐC của một embedding model một
+  cách ĐỘC LẬP với tiến độ pipeline production `src/retrieval`. Có cache embedding corpus (.npz)
+  vì corpus không đổi giữa các lần chạy. KHÔNG phải pipeline cuối cùng của nhóm.
 
 ## Cách dùng
 
@@ -37,6 +41,17 @@ File dự đoán (`--predictions`) LUÔN phải đúng định dạng `submissio
 {
   "86666": { "answer": ["280282"] }
 }
+```
+
+Đo baseline retrieval độc lập (không cần chờ `src/retrieval` xong):
+
+```bash
+python -m src.evaluation.baseline_retrieval \
+    --model bqbbao6/vietnamese-legal-embedding \
+    --corpus data/raw/selected-contexts.zip \
+    --questions data/raw/train.json \
+    --output outputs/baseline_predictions.json \
+    --embedding-cache outputs/corpus_embeddings__bqbbao6.npz
 ```
 
 ## Lưu ý cho các thành viên khác

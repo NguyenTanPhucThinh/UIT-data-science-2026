@@ -13,6 +13,10 @@ Module fine-tune model cho Task 1 - LegalIR (phụ trách: Nguyễn Huy Hoàng, 
 - `finetune_embedding.py` — CLI fine-tune embedding model bằng contrastive learning
   (`MultipleNegativesRankingLoss`), có tuỳ chọn `--hard-negatives` để mine hard negative và
   chuyển sang `TripletLoss` (thường cho kết quả tốt hơn nhưng chậm hơn vì phải encode thêm để mine).
+- `finetune_reranker.py` — CLI fine-tune cross-encoder reranker (điểm liên quan 0-1 cho cặp
+  câu hỏi/đoạn văn), tái sử dụng `build_positive_pairs` từ `finetune_embedding.py`; negative
+  mặc định lấy ngẫu nhiên trong corpus, hoặc `--hard-negatives` để mine bằng một embedding model
+  riêng (khuyến nghị dùng khi đã có baseline reranker chạy ổn — negative ngẫu nhiên thường quá dễ).
 
 ## Cách dùng
 
@@ -44,9 +48,23 @@ python -m src.training.finetune_embedding \
     --epochs 3 --batch-size 16 --hard-negatives
 ```
 
-Sau khi fine-tune xong, chạy lại retrieval pipeline (`src/retrieval`) với model mới này, xuất
-kết quả rồi dùng `src/evaluation/evaluate.py` để so sánh Recall/Precision với model gốc
-(pretrained) - đây là cách duy nhất biết chắc việc fine-tune có thực sự cải thiện hay không.
+Fine-tune reranker (sau khi đã có embedding baseline, dùng chính embedding model đó để mine hard negative):
+
+```bash
+python -m src.training.finetune_reranker \
+    --base-model BAAI/bge-reranker-v2-m3 \
+    --train-json data/raw/train.json \
+    --corpus data/raw/selected-contexts.zip \
+    --output-dir models/reranker-ft \
+    --epochs 2 --batch-size 16 \
+    --hard-negatives --hard-negative-embedding-model models/vietnamese-legal-embedding-ft
+```
+
+Sau khi fine-tune xong, chạy lại retrieval pipeline (`src/retrieval`) với model mới này — hoặc
+dùng `src/evaluation/baseline_retrieval.py` để đo nhanh embedding một mình trong lúc chờ
+`src/retrieval` hoàn thiện — rồi dùng `src/evaluation/evaluate.py` để so sánh Recall/Precision
+với model gốc (pretrained). Đây là cách duy nhất biết chắc việc fine-tune có thực sự cải thiện
+hay không. Đừng quên điền kết quả vào Model Card tương ứng (`docs/model-card-template.md`).
 
 ## Quan trọng — tuân thủ quy định cuộc thi
 
