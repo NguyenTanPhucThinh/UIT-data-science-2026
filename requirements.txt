@@ -1,0 +1,11 @@
+# --- src/training + src/evaluation (Nguyễn Huy Hoàng) ---
+sentence-transformers>=3.0.0
+torch>=2.1.0
+numpy>=1.26.0
+scikit-learn>=1.3.0
+tqdm>=4.66.0
+
+# Ghi chú: các thành viên khác nên bổ sung thêm dependency riêng của module mình vào đây
+# (vd rank_bm25 / faiss-cpu cho src/retrieval, qdrant-client cho src/vectorstore nếu dùng
+# Qdrant CHẠY LOCAL qua Docker - KHÔNG dùng Qdrant Cloud, xem cảnh báo vi phạm quy định
+# đã trao đổi trong nhóm).
