@@ -35,10 +35,9 @@ data/inspect_empty_docs.py
 data/test_tok.py
 data/test_vncorenlp.py
 
-# Downloaded models & model weights
-models/
-
-# Large generated files (Tracked via Git LFS in .gitattributes)
+# Large generated datasets & raw zip archives (Generated via src/ingestion + EDA/build_pipeline.py)
+data/processed/*.jsonl
+data/raw/*.zip
 
 # Environments & IDE
 .venv/

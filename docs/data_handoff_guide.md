@@ -4,6 +4,11 @@
 
 This document serves as the official integration guide for the datasets produced in `data/processed/`. It explains the data schemas, the chunking strategy, and the recommended retrieval strategies based on our Data & Utilities pipeline (Phase 1-4).
 
+> 💡 **Quick Data Generation for Team Members**:  
+> If `data/processed/` is empty on your machine, simply place `selected-contexts.zip` in `data/raw/` and run:  
+> `python "src/ingestion + EDA/build_pipeline.py"`  
+> This will automatically unzip the raw contexts and generate all clean datasets locally in 2 minutes.
+
 ---
 
 ## 1. Output Datasets Overview

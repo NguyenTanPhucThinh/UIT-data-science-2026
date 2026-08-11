@@ -11,6 +11,20 @@ This repository contains the architecture and implementation for the UIT Data Sc
 - `docs/`: Master planning documents, task distribution, and data handoff guides.
 - `data/processed/`: The final cleaned, segmented, and chunked legal text ready for embedding.
 
+## Quickstart: Generating Processed Datasets
+To build all cleaned, tokenized, and chunked datasets locally on your machine, simply ensure `selected-contexts.zip` is placed in `data/raw/` and run:
+
+```bash
+python "src/ingestion + EDA/build_pipeline.py"
+```
+This automated bridge script will:
+1. Automatically unzip `data/raw/selected-contexts.zip` if needed.
+2. Run Phase 1 audit & unification (`corpus.jsonl` & stratified train/val splits).
+3. Run Phase 2 NFC normalization & multi-threaded `VnCoreNLP` word segmentation.
+4. Run Phase 4 structural chunking to output `chunks_corpus.jsonl` in `data/processed/`.
+
+---
+
 ## Data & Utilities Preprocessing Pipeline (Phase 1-4)
 The foundation of the repository (Data Processing) has been completed, resulting in the pristine dataset output found in `data/processed/`.
 
