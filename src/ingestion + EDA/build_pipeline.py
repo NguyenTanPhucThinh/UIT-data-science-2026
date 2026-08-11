@@ -14,18 +14,45 @@ from src.utils.timer import timeit
 logger = get_logger("build_pipeline")
 
 def ensure_raw_data():
-    """Unzips selected-contexts.zip if selected-contexts directory is missing."""
-    zip_path = RAW_DATA_DIR / "selected-contexts.zip"
+    """
+    Automatically detects and extracts the master competition zip file 
+    (e.g., 'LegalIR - Public Test-*.zip') as well as the nested 'selected-contexts.zip'.
+    """
     extract_dir = RAW_DATA_DIR / "selected-contexts"
     
-    if not extract_dir.exists() or not any(extract_dir.iterdir()):
-        if zip_path.exists():
-            logger.info(f"Unzipping {zip_path} to {extract_dir}...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(RAW_DATA_DIR)
-            logger.info("Unzipping complete.")
-        else:
-            logger.warning(f"Neither {extract_dir} nor {zip_path} found! Please place selected-contexts.zip in data/raw/")
+    # Check if raw context files already exist
+    if extract_dir.exists() and any(extract_dir.iterdir()):
+        logger.info("Raw context files already unzipped in data/raw/selected-contexts/")
+        return
+
+    # 1. Look for Master Zip file (e.g. LegalIR*.zip or any zip in data/raw except selected-contexts.zip)
+    master_zips = list(RAW_DATA_DIR.glob("LegalIR*.zip")) + list(RAW_DATA_DIR.glob("*.zip"))
+    master_zips = [z for z in master_zips if z.name != "selected-contexts.zip"]
+    
+    if master_zips:
+        master_zip = master_zips[0]
+        logger.info(f"Detected master competition zip: {master_zip.name}. Extracting...")
+        with zipfile.ZipFile(master_zip, 'r') as zip_ref:
+            # Extract contents directly into RAW_DATA_DIR
+            for member in zip_ref.namelist():
+                filename = Path(member).name
+                if not filename:
+                    continue
+                # Copy file out directly to RAW_DATA_DIR
+                target_path = RAW_DATA_DIR / filename
+                with zip_ref.open(member) as source, open(target_path, "wb") as target:
+                    target.write(source.read())
+        logger.info("Master zip extraction complete.")
+
+    # 2. Extract nested selected-contexts.zip if needed
+    zip_path = RAW_DATA_DIR / "selected-contexts.zip"
+    if zip_path.exists():
+        logger.info(f"Extracting nested context archive: {zip_path.name}...")
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(RAW_DATA_DIR)
+        logger.info("Context files extraction complete.")
+    else:
+        logger.warning(f"No selected-contexts.zip found in {RAW_DATA_DIR}! Please place the competition zip file in data/raw/")
 
 def run_all():
     logger.info("==================================================")
