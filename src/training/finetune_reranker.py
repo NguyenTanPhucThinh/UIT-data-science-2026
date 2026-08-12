@@ -113,6 +113,20 @@ def main() -> None:
     parser.add_argument("--n-random-negatives", type=int, default=1, help="Số negative ngẫu nhiên cho mỗi positive (khi KHÔNG dùng --hard-negatives)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="'auto' (mặc định, ưu tiên GPU nếu có), 'cuda', hoặc 'cpu'")
+    parser.add_argument(
+        "--fp16", action="store_true", default=True,
+        help="Bật mixed-precision training (mặc định BẬT - nhanh hơn 2-4 lần trên GPU hỗ trợ, "
+        "vd RTX 3060). CrossEncoder nặng hơn embedding model nhiều (ghép câu hỏi+passage chung "
+        "1 chuỗi, chạy qua toàn bộ cross-attention), fp32 mặc định của sentence-transformers "
+        "có thể khiến 1 epoch mất hàng chục giờ.",
+    )
+    parser.add_argument("--no-fp16", dest="fp16", action="store_false", help="Tắt fp16 nếu gặp lỗi/NaN loss")
+    parser.add_argument(
+        "--bf16", action="store_true", default=True,
+        help="Load model ở bfloat16 thay vì fp32 (mặc định BẬT - giảm ~1/2 compute+VRAM, ổn định "
+        "hơn fp16). Tự fallback về fp32 nếu bản thư viện không hỗ trợ.",
+    )
+    parser.add_argument("--no-bf16", dest="bf16", action="store_false", help="Tắt bf16, load model ở fp32")
     args = parser.parse_args()
 
     if args.hard_negatives and not args.hard_negative_embedding_model:
@@ -132,6 +146,17 @@ def main() -> None:
         sys.exit(1)
 
     device = resolve_device(args.device)
+
+    if device == "cuda":
+        # TF32: bật tensor core cho phép tính fp32 trên GPU Ampere+ (RTX 3060 trở lên) - nhanh
+        # hơn đáng kể (thường 1.5-3 lần) so với fp32 thuần, KHÔNG phụ thuộc API fp16 của
+        # sentence-transformers (vốn có thể không được hỗ trợ tùy version, như đã gặp ở trên).
+        # Đây là cờ backend của chính torch, luôn có sẵn từ torch>=1.7, không cần cài thêm gì.
+        import torch
+
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        logger.info("Đã bật TF32 (torch.backends.cuda/cudnn.allow_tf32) để tăng tốc training trên GPU Ampere+.")
 
     pairs = build_positive_pairs(args.train_json, args.corpus, max_chars=args.max_chars)
     if not pairs:
@@ -167,19 +192,65 @@ def main() -> None:
     random.shuffle(train_examples)
 
     logger.info("Load base reranker: %s", args.base_model)
-    model = CrossEncoder(args.base_model, num_labels=1, device=device)
+    model = None
+    bf16_applied = False
+    if device == "cuda" and args.bf16:
+        # Load thẳng weight ở bf16 (thay vì fp32) - giảm ~1/2 compute + VRAM, KHÔNG cần loss
+        # scaling như fp16 (bf16 giữ nguyên dải exponent của fp32 nên ổn định hơn khi train).
+        # Tên tham số truyền model dtype khác nhau tùy version sentence-transformers/transformers
+        # nên thử lần lượt, cái nào không nhận (TypeError) thì thử cái tiếp theo.
+        import torch
+
+        for kwarg_name in ("model_kwargs", "automodel_args"):
+            try:
+                model = CrossEncoder(
+                    args.base_model, num_labels=1, device=device,
+                    **{kwarg_name: {"torch_dtype": torch.bfloat16}},
+                )
+                logger.info("Load model ở bf16 thành công (tham số %s=...).", kwarg_name)
+                bf16_applied = True
+                break
+            except TypeError:
+                continue
+        if model is None:
+            logger.warning(
+                "Bản sentence-transformers/transformers hiện tại không hỗ trợ load model ở bf16 "
+                "qua model_kwargs/automodel_args - load bình thường ở fp32 (chậm hơn, dùng "
+                "--no-bf16 để tắt cảnh báo này)."
+            )
+    if model is None:
+        model = CrossEncoder(args.base_model, num_labels=1, device=device)
 
     train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=args.batch_size)
     warmup_steps = int(len(train_dataloader) * args.epochs * 0.1)
-    logger.info("Bắt đầu fine-tune: %d epoch, batch_size=%d, warmup_steps=%d", args.epochs, args.batch_size, warmup_steps)
+    # Không bật fp16 (AMP) CHỒNG lên model đã load bf16 - dễ lỗi/không nhất quán dtype. bf16 đã
+    # tự giảm compute rồi nên không cần fp16 thêm nữa.
+    try_fp16 = args.fp16 and not bf16_applied
+    logger.info(
+        "Bắt đầu fine-tune: %d epoch, batch_size=%d, warmup_steps=%d, bf16=%s, fp16=%s",
+        args.epochs, args.batch_size, warmup_steps, bf16_applied, try_fp16,
+    )
 
-    model.fit(
+    fit_kwargs = dict(
         train_dataloader=train_dataloader,
         epochs=args.epochs,
         warmup_steps=warmup_steps,
         output_path=args.output_dir,
         show_progress_bar=True,
     )
+    if try_fp16:
+        try:
+            model.fit(**fit_kwargs, fp16=True)
+        except TypeError:
+            # Bản sentence-transformers đang cài không nhận tham số fp16 qua fit() (API khác
+            # version) - train ở fp32 thay vì crash, chỉ chậm hơn chứ không sai kết quả.
+            logger.warning(
+                "Bản sentence-transformers hiện tại không nhận tham số fp16 qua CrossEncoder.fit() "
+                "- train ở fp32/bf16 hiện có (chậm hơn nhưng vẫn đúng)."
+            )
+            model.fit(**fit_kwargs)
+    else:
+        model.fit(**fit_kwargs)
 
     logger.info("Đã lưu reranker fine-tune tại: %s", args.output_dir)
     logger.info(

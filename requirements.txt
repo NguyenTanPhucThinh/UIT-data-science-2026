@@ -1,5 +1,11 @@
 # --- src/training + src/evaluation (Nguyễn Huy Hoàng) ---
-sentence-transformers>=3.0.0
+# LƯU Ý: sentence-transformers bản mới (>=3.x) chuyển sang dùng Trainer của HuggingFace
+# transformers bên trong model.fit()/CrossEncoder.fit() - cần thêm datasets + accelerate mà
+# bản thân sentence-transformers KHÔNG tự cài kèm. Dùng "[train]" (extras chính chủ thư viện tự
+# khai báo) thay vì tự liệt kê từng gói lẻ, để tránh thiếu gói mới phát sinh ở bản sau.
+sentence-transformers[train]>=3.0.0
+accelerate>=1.1.0  # bắt buộc cho model.fit()/CrossEncoder.fit() - lỗi "requires accelerate>=1.1.0" nếu thiếu
+datasets>=2.19.0
 torch>=2.1.0
 numpy>=1.26.0
 scikit-learn>=1.3.0
