@@ -10,7 +10,7 @@ thiện, nên chạy evaluate.py trên output của pipeline THẬT thay vì scr
 
 Cách dùng:
     python -m src.evaluation.baseline_retrieval \\
-        --model bqbbao6/vietnamese-legal-embedding \\
+        --model bqbbao6/VN_legal_embedding_512 \\
         --corpus data/raw/selected-contexts.zip \\
         --questions data/raw/train.json \\
         --output outputs/baseline_predictions.json \\
@@ -40,10 +40,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 try:
-    from ..training.data_utils import CorpusReader, chunk_passage
+    from ..training.data_utils import CorpusReader, chunk_passage, resolve_device
 except ImportError:  # cho phép chạy trực tiếp: python src/evaluation/baseline_retrieval.py
     sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from src.training.data_utils import CorpusReader, chunk_passage
+    from src.training.data_utils import CorpusReader, chunk_passage, resolve_device
 
 
 def build_corpus_chunks(corpus: CorpusReader, max_chars: int = 2000) -> Tuple[List[str], List[str]]:
@@ -145,7 +145,7 @@ def retrieve_top_k(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Baseline retrieval brute-force (chỉ embedding) cho Task 1 - LegalIR")
-    parser.add_argument("--model", required=True, help="vd: bqbbao6/vietnamese-legal-embedding hoặc đường dẫn model đã fine-tune local")
+    parser.add_argument("--model", required=True, help="vd: bqbbao6/VN_legal_embedding_512 hoặc đường dẫn model đã fine-tune local")
     parser.add_argument("--corpus", required=True, help="Đường dẫn selected-contexts.zip")
     parser.add_argument("--questions", required=True, help="train.json hoặc public-official.json")
     parser.add_argument("--output", required=True, help="Đường dẫn lưu file dự đoán (định dạng submission.json)")
@@ -154,6 +154,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--embedding-cache", default=None, help="Nếu chỉ định, cache embedding corpus ra file .npz để tái sử dụng giữa các lần chạy")
     parser.add_argument("--limit-questions", type=int, default=None, help="Chỉ chạy N câu hỏi đầu (debug nhanh)")
+    parser.add_argument("--device", default="auto", help="'auto' (mặc định, ưu tiên GPU nếu có), 'cuda', hoặc 'cpu'")
     args = parser.parse_args()
 
     try:
@@ -162,8 +163,9 @@ def main() -> None:
         logger.error("Thiếu sentence-transformers. Chạy: pip install sentence-transformers torch")
         sys.exit(1)
 
+    device = resolve_device(args.device)
     logger.info("Load model: %s", args.model)
-    model = SentenceTransformer(args.model)
+    model = SentenceTransformer(args.model, device=device)
 
     corpus = CorpusReader(args.corpus)
     logger.info("Corpus: %d văn bản", len(corpus))

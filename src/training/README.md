@@ -30,7 +30,7 @@ Fine-tune baseline (in-batch negatives, nhanh, nên chạy trước để có ba
 
 ```bash
 python -m src.training.finetune_embedding \
-    --base-model bqbbao6/vietnamese-legal-embedding \
+    --base-model bqbbao6/VN_legal_embedding_512 \
     --train-json data/raw/train.json \
     --corpus data/raw/selected-contexts.zip \
     --output-dir models/vietnamese-legal-embedding-ft \
@@ -41,7 +41,7 @@ Fine-tune với hard negative mining (thử sau khi có baseline, để xem có 
 
 ```bash
 python -m src.training.finetune_embedding \
-    --base-model bqbbao6/vietnamese-legal-embedding \
+    --base-model bqbbao6/VN_legal_embedding_512 \
     --train-json data/raw/train.json \
     --corpus data/raw/selected-contexts.zip \
     --output-dir models/vietnamese-legal-embedding-ft-hardneg \

@@ -18,12 +18,26 @@ from src.config.paths import DATA_DIR, MODELS_DIR, DOCS_DIR
 import text_cleaner
 import legal_preprocessor
 
-from pyvi import ViTokenizer
+# Set default JAVA_HOME only if not already configured in environment and fallback path exists
+if "JAVA_HOME" not in os.environ:
+    default_java = r"C:\Program Files\Java\jre1.8.0_491"
+    if os.path.exists(default_java):
+        os.environ["JAVA_HOME"] = default_java
+
+import py_vncorenlp
 
 rdrsegmenter = None
 
 def init_worker():
-    pass
+    global rdrsegmenter
+    save_dir = str(MODELS_DIR / 'vncorenlp')
+    
+    # Auto-download VnCoreNLP model if missing on fresh clone
+    if not (MODELS_DIR / 'vncorenlp' / 'VnCoreNLP-1.2.jar').exists():
+        os.makedirs(save_dir, exist_ok=True)
+        py_vncorenlp.download_model(save_dir=save_dir)
+        
+    rdrsegmenter = py_vncorenlp.VnCoreNLP(annotators=["wseg"], save_dir=save_dir)
 
 def fast_tokenize_text(text: str) -> str:
     """Line-by-line tokenization using PyVi."""
