@@ -14,6 +14,14 @@ Module đánh giá chất lượng hệ thống Task 1 - LegalIR (phụ trách: 
   toàn corpus, KHÔNG BM25/hybrid/rerank) để đo Recall/Precision MỐC của một embedding model một
   cách ĐỘC LẬP với tiến độ pipeline production `src/retrieval`. Có cache embedding corpus (.npz)
   vì corpus không đổi giữa các lần chạy. KHÔNG phải pipeline cuối cùng của nhóm.
+- `bm25_baseline.py` — CLI retrieval BM25-only (sparse) trên `data/processed/chunks_corpus.jsonl`
+  (Phase 4 của Kiên - Data & Utilities), chấm theo ĐÚNG công thức Recall@5/Precision@5 chính
+  thức BTC (dùng chung `metrics.py` với các script khác, so sánh 1-1 được với dense/hybrid).
+- `full_pipeline_eval.py` — CLI pipeline hybrid ĐẦY ĐỦ (dense + BM25 + RRF fusion + rerank cross-
+  encoder), chạy hoàn toàn LOCAL, KHÔNG cần Qdrant Cloud (Storage & Representation) hay code
+  retrieval thật của Core RAG (`src/retrieval`). Dùng đúng `data/processed/chunks_corpus.jsonl`
+  của Kiên (không tự chunk lại). Có thể dùng ngay để tạo submission chất lượng cao trong lúc chờ
+  2 nhóm kia hoàn thiện hạ tầng production — xem docstring đầu file để biết cách dùng đầy đủ.
 
 ## Cách dùng
 
@@ -52,6 +60,23 @@ python -m src.evaluation.baseline_retrieval \
     --questions data/raw/train.json \
     --output outputs/baseline_predictions.json \
     --embedding-cache outputs/corpus_embeddings__bqbbao6.npz
+```
+
+Chạy pipeline hybrid đầy đủ (dense + BM25 + rerank), sau khi đã có `data/processed/chunks_corpus.jsonl`
+(chạy `python "src/ingestion + EDA/build_pipeline.py"` nếu chưa có - cần Java cho VnCoreNLP):
+
+```bash
+python -m src.evaluation.full_pipeline_eval \
+    --embedding-model models/vietnamese-legal-embedding-ft \
+    --reranker-model models/reranker-ft \
+    --chunks data/processed/chunks_corpus.jsonl \
+    --questions data/processed/val_preprocessed.jsonl \
+    --output outputs/full_pipeline_predictions.json \
+    --embedding-cache outputs/chunks_corpus_embeddings__ft.npz
+
+python -m src.evaluation.evaluate \
+    --ground-truth data/processed/val_split_20.json \
+    --predictions outputs/full_pipeline_predictions.json
 ```
 
 ## Lưu ý cho các thành viên khác
