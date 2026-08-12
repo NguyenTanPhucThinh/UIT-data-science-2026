@@ -47,7 +47,7 @@ File dự đoán (`--predictions`) LUÔN phải đúng định dạng `submissio
 
 ```bash
 python -m src.evaluation.baseline_retrieval \
-    --model bqbbao6/vietnamese-legal-embedding \
+    --model bqbbao6/VN_legal_embedding_512 \
     --corpus data/raw/selected-contexts.zip \
     --questions data/raw/train.json \
     --output outputs/baseline_predictions.json \

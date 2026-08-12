@@ -24,7 +24,7 @@ Cách dùng cơ bản (negative ngẫu nhiên - nhanh, làm baseline trước):
 Bật hard negative mining (khuyến nghị - reranker học phân biệt "gần đúng nhưng sai" mới có ích,
 negative ngẫu nhiên thường quá dễ, model không học được gì nhiều):
     python -m src.training.finetune_reranker ... \\
-        --hard-negatives --hard-negative-embedding-model bqbbao6/vietnamese-legal-embedding
+        --hard-negatives --hard-negative-embedding-model bqbbao6/VN_legal_embedding_512
 
 `--hard-negative-embedding-model`: model EMBEDDING (không phải reranker) dùng riêng để mine hard
 negative (tìm văn bản "giống câu hỏi" theo embedding nhưng KHÔNG phải đáp án đúng). Có thể trỏ
@@ -49,11 +49,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 try:
-    from .data_utils import CorpusReader, chunk_passage, load_labeled_questions, select_best_chunk
+    from .data_utils import CorpusReader, chunk_passage, load_labeled_questions, resolve_device, select_best_chunk
     from .finetune_embedding import build_positive_pairs, mine_hard_negatives
 except ImportError:  # cho phép chạy trực tiếp: python src/training/finetune_reranker.py
     sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from src.training.data_utils import CorpusReader, chunk_passage, load_labeled_questions, select_best_chunk
+    from src.training.data_utils import CorpusReader, chunk_passage, load_labeled_questions, resolve_device, select_best_chunk
     from src.training.finetune_embedding import build_positive_pairs, mine_hard_negatives
 
 
@@ -112,6 +112,7 @@ def main() -> None:
     parser.add_argument("--hard-negative-top-k", type=int, default=3, help="Số hard negative lấy cho mỗi câu hỏi")
     parser.add_argument("--n-random-negatives", type=int, default=1, help="Số negative ngẫu nhiên cho mỗi positive (khi KHÔNG dùng --hard-negatives)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="auto", help="'auto' (mặc định, ưu tiên GPU nếu có), 'cuda', hoặc 'cpu'")
     args = parser.parse_args()
 
     if args.hard_negatives and not args.hard_negative_embedding_model:
@@ -130,6 +131,8 @@ def main() -> None:
         )
         sys.exit(1)
 
+    device = resolve_device(args.device)
+
     pairs = build_positive_pairs(args.train_json, args.corpus, max_chars=args.max_chars)
     if not pairs:
         logger.error("Không tạo được cặp training nào, kiểm tra lại train.json/corpus")
@@ -141,7 +144,7 @@ def main() -> None:
         logger.info("Load embedding model để mine hard negative: %s", args.hard_negative_embedding_model)
         from sentence_transformers import SentenceTransformer
 
-        embed_model = SentenceTransformer(args.hard_negative_embedding_model)
+        embed_model = SentenceTransformer(args.hard_negative_embedding_model, device=device)
         triplets = mine_hard_negatives(
             embed_model, pairs, corpus, top_k=args.hard_negative_top_k, max_chars=args.max_chars
         )
@@ -164,7 +167,7 @@ def main() -> None:
     random.shuffle(train_examples)
 
     logger.info("Load base reranker: %s", args.base_model)
-    model = CrossEncoder(args.base_model, num_labels=1)
+    model = CrossEncoder(args.base_model, num_labels=1, device=device)
 
     train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=args.batch_size)
     warmup_steps = int(len(train_dataloader) * args.epochs * 0.1)

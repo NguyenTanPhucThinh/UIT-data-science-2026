@@ -16,7 +16,7 @@
 |---|---|
 | Tên model | [vd. vietnamese-legal-embedding-ft-hardneg] |
 | Loại | [ ] Embedding  [ ] Reranker (cross-encoder)  [ ] Generative/LLM |
-| Model base (pretrained gốc) | [vd. bqbbao6/vietnamese-legal-embedding, từ HuggingFace Hub] |
+| Model base (pretrained gốc) | [vd. bqbbao6/VN_legal_embedding_512, từ HuggingFace Hub] |
 | Có fine-tune không | [ ] Có — script: `src/training/finetune_embedding.py` hoặc `finetune_reranker.py` [ ] Không (dùng nguyên bản pretrained) |
 | Số tham số | [điền số chính xác, vd. từ `model.num_parameters()` hoặc HuggingFace model card của base] |
 | Ngày huấn luyện/hoàn thiện | [điền ngày] |
@@ -60,7 +60,7 @@
 ```bash
 [điền lệnh, vd:
 python -m src.training.finetune_embedding \
-    --base-model bqbbao6/vietnamese-legal-embedding \
+    --base-model bqbbao6/VN_legal_embedding_512 \
     --train-json data/raw/train.json \
     --corpus data/raw/selected-contexts.zip \
     --output-dir models/vietnamese-legal-embedding-ft-hardneg \

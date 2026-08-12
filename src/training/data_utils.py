@@ -6,10 +6,13 @@ Tiện ích load dữ liệu dùng chung cho training/evaluation Task 1 - LegalI
 from __future__ import annotations
 
 import json
+import logging
 import re
 import zipfile
 from dataclasses import dataclass
 from typing import Dict, Iterator, List
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -111,6 +114,39 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 def _tokenize(text: str) -> set:
     return {w.lower() for w in _WORD_RE.findall(text)}
+
+
+def resolve_device(requested: str = "auto") -> str:
+    """Chọn device ("cuda" hoặc "cpu") cho model embedding/reranker, và LUÔN in rõ ra log đang
+    chạy trên device nào.
+
+    Lý do cần hàm này: sentence-transformers/CrossEncoder nếu không truyền `device` sẽ tự chọn
+    ngầm - có thể lặng lẽ chạy trên CPU dù máy có GPU (vd. bản torch cài thiếu CUDA), khiến việc
+    encode toàn bộ corpus (hàng trăm nghìn chunk) mất HÀNG GIỜ thay vì vài phút mà không có cảnh
+    báo gì, trông như treo máy.
+    """
+    import torch
+
+    device = requested if requested != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+
+    if device == "cpu":
+        logger.warning(
+            "Đang chạy trên CPU - với corpus lớn (hàng trăm nghìn chunk) việc encode có thể mất "
+            "HÀNG GIỜ. Nếu máy có GPU NVIDIA, kiểm tra: "
+            'python -c "import torch; print(torch.cuda.is_available())" '
+            "- nếu ra False dù có GPU, khả năng cao bản torch đang cài KHÔNG có CUDA. Kiểm tra "
+            "bản CUDA của driver bằng lệnh `nvidia-smi`, rồi cài lại torch đúng bản tương ứng "
+            "theo hướng dẫn tại https://pytorch.org/get-started/locally/ "
+            "(vd: pip install torch --index-url https://download.pytorch.org/whl/cu121)."
+        )
+    else:
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+        except Exception:
+            gpu_name = "?"
+        logger.info("Đang dùng GPU: %s", gpu_name)
+
+    return device
 
 
 def select_best_chunk(question: str, chunks: List[str]) -> str:

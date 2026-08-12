@@ -11,7 +11,7 @@ TUÂN THỦ QUY ĐỊNH CUỘC THI:
 
 Cách dùng cơ bản (baseline, in-batch negatives):
     python -m src.training.finetune_embedding \\
-        --base-model bqbbao6/vietnamese-legal-embedding \\
+        --base-model bqbbao6/VN_legal_embedding_512 \\
         --train-json data/raw/train.json \\
         --corpus data/raw/selected-contexts.zip \\
         --output-dir models/vietnamese-legal-embedding-ft \\
@@ -35,10 +35,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 try:
-    from .data_utils import CorpusReader, chunk_passage, load_labeled_questions, select_best_chunk
+    from .data_utils import CorpusReader, chunk_passage, load_labeled_questions, resolve_device, select_best_chunk
 except ImportError:  # cho phép chạy trực tiếp: python src/training/finetune_embedding.py
     sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from src.training.data_utils import CorpusReader, chunk_passage, load_labeled_questions, select_best_chunk
+    from src.training.data_utils import CorpusReader, chunk_passage, load_labeled_questions, resolve_device, select_best_chunk
 
 
 def build_positive_pairs(train_json_path: str, corpus_zip_path: str, max_chars: int = 2000):
@@ -118,7 +118,7 @@ def mine_hard_negatives(model, pairs, corpus: "CorpusReader", top_k: int = 5, po
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fine-tune embedding model cho Task 1 - LegalIR")
-    parser.add_argument("--base-model", required=True, help="vd: bqbbao6/vietnamese-legal-embedding")
+    parser.add_argument("--base-model", required=True, help="vd: bqbbao6/VN_legal_embedding_512")
     parser.add_argument("--train-json", required=True)
     parser.add_argument("--corpus", required=True, help="Đường dẫn selected-contexts.zip")
     parser.add_argument("--output-dir", required=True)
@@ -128,6 +128,7 @@ def main() -> None:
     parser.add_argument("--hard-negatives", action="store_true", help="Bật hard negative mining (TripletLoss thay vì MultipleNegativesRankingLoss)")
     parser.add_argument("--hard-negative-top-k", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", default="auto", help="'auto' (mặc định, ưu tiên GPU nếu có), 'cuda', hoặc 'cpu'")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -142,8 +143,9 @@ def main() -> None:
         )
         sys.exit(1)
 
+    device = resolve_device(args.device)
     logger.info("Load base model: %s", args.base_model)
-    model = SentenceTransformer(args.base_model)
+    model = SentenceTransformer(args.base_model, device=device)
 
     pairs = build_positive_pairs(args.train_json, args.corpus, max_chars=args.max_chars)
     if not pairs:

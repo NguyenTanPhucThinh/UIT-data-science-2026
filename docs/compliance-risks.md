@@ -48,7 +48,7 @@ cuộc thi (mục "Quy định về mô hình" / "Quy định về API và giấ
 ## 🟡 Cần theo dõi / rà soát định kỳ (chưa xác nhận vi phạm)
 
 - **Tổng tham số toàn pipeline:** model đề xuất hiện tại (`docs/allowed-models.md`) gồm
-  bqbbao6/vietnamese-legal-embedding + AITeamVN/Vietnamese_Reranker +
+  bqbbao6/VN_legal_embedding_512 + AITeamVN/Vietnamese_Reranker +
   thangvip/qwen3-1.7b-vietnamese-legal-grpo-phase-2 (~1.7B riêng phần LLM). Cần cộng chính xác
   tổng tham số CẢ 3 model (+ bất kỳ model nào thêm sau này) trước khi chốt, đảm bảo dưới 4 tỷ.
   Chưa có số liệu chính thức verify từng model.
@@ -59,7 +59,7 @@ cuộc thi (mục "Quy định về mô hình" / "Quy định về API và giấ
   có thể mặc định gọi HuggingFace Inference API (endpoint online) nếu cấu hình sai, thay vì tải
   checkpoint về chạy local. Cần đảm bảo code luôn tải model về đĩa và chạy local (không bật
   `use_remote` / không gọi qua `huggingface_hub.InferenceClient`).
-- **License của các model cộng đồng ít tên tuổi:** bqbbao6/vietnamese-legal-embedding,
+- **License của các model cộng đồng ít tên tuổi:** bqbbao6/VN_legal_embedding_512,
   mainguyen9/vietlegal-harrier-0.6b, và các model tương tự do cá nhân đăng tải trên HuggingFace —
   cần kiểm tra license cụ thể (research/education/non-commercial OK theo quy định) trước khi
   dùng chính thức, đặc biệt nếu lọt Top 7 phải công khai mã nguồn.
