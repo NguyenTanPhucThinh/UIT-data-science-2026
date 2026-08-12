@@ -40,16 +40,15 @@ def init_worker():
     rdrsegmenter = py_vncorenlp.VnCoreNLP(annotators=["wseg"], save_dir=save_dir)
 
 def fast_tokenize_text(text: str) -> str:
-    """Line-by-line tokenization using VnCoreNLP."""
+    """Line-by-line tokenization using PyVi."""
     if not text:
         return ""
     lines = text.split("\n")
     tokenized_lines = []
     for line in lines:
         if line.strip():
-            # word_segment returns a list of sentences (strings)
-            sentences = rdrsegmenter.word_segment(line)
-            tokenized_lines.append(" ".join(sentences))
+            tokenized = ViTokenizer.tokenize(line)
+            tokenized_lines.append(tokenized)
         else:
             tokenized_lines.append("")
     return "\n".join(tokenized_lines)
