@@ -12,7 +12,12 @@ This repository contains the architecture and implementation for the UIT Data Sc
 - `data/processed/`: The final cleaned, segmented, and chunked legal text ready for embedding.
 
 ## Quickstart: Generating Processed Datasets
-To build all cleaned, tokenized, and chunked datasets locally on your machine:
+
+### 📋 Prerequisites
+- **Python 3.10+**
+- **Java (JRE/JDK 8+)**: Required by `VnCoreNLP` for Vietnamese word segmentation.
+
+### 🚀 Usage
 1. Place the competition zip file (e.g., `LegalIR - Public Test-*.zip`) inside `data/raw/`.
 2. Run the automated bridge script:
 
@@ -23,9 +28,10 @@ python "src/ingestion + EDA/build_pipeline.py"
 This automated script will:
 1. Automatically detect and extract the master competition zip file to extract `train.json`, `public-official.json`, and `selected-contexts.zip`.
 2. Automatically extract the nested `selected-contexts.zip` into `data/raw/selected-contexts/`.
-3. Run Phase 1 audit & unification (`corpus.jsonl` & stratified train/val splits).
-4. Run Phase 2 NFC normalization & multi-threaded `VnCoreNLP` word segmentation.
-5. Run Phase 4 structural chunking to output `chunks_corpus.jsonl` in `data/processed/`.
+3. Automatically download `VnCoreNLP` model binary to `models/vncorenlp/` if missing.
+4. Run Phase 1 audit & unification (`corpus.jsonl` & stratified train/val splits).
+5. Run Phase 2 NFC normalization & multi-threaded `VnCoreNLP` word segmentation.
+6. Run Phase 4 structural chunking to output `chunks_corpus.jsonl` in `data/processed/`.
 
 ---
 
