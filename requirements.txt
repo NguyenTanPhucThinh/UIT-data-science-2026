@@ -1,3 +1,10 @@
+# --- src/retrieval (Core RAG & Hybrid Retrieval - Nguyễn Trường Giang) ---
+rank_bm25>=0.2.2          # dùng trong BM25Retriever (src/retrieval/bm25.py)
+faiss-cpu>=1.7.4          # dùng trong FAISS vector search (src/retrieval/dense.py)
+sentence-transformers>=3.0.0  # dùng cho DenseRetriever & Reranker CrossEncoder
+torch>=2.1.0              # PyTorch backend cho Dense embedding & CrossEncoder
+numpy>=1.26.0             # xử lý array & scores trong retrieval/fusion
+
 # --- src/training + src/evaluation (Nguyễn Huy Hoàng) ---
 # LƯU Ý: sentence-transformers bản mới (>=3.x) chuyển sang dùng Trainer của HuggingFace
 # transformers bên trong model.fit()/CrossEncoder.fit() - cần thêm datasets + accelerate mà
@@ -6,17 +13,9 @@
 sentence-transformers[train]>=3.0.0
 accelerate>=1.1.0  # bắt buộc cho model.fit()/CrossEncoder.fit() - lỗi "requires accelerate>=1.1.0" nếu thiếu
 datasets>=2.19.0
-torch>=2.1.0
-numpy>=1.26.0
 scikit-learn>=1.3.0
 tqdm>=4.66.0
-rank_bm25>=0.2.2  # dùng trong bm25_baseline.py / full_pipeline_eval.py (nhánh sparse của hybrid retrieval)
 
 # --- src/ingestion + EDA (Đoàn Quốc Kiên) ---
 py_vncorenlp>=0.1.4  # word segmentation - CẦN CÀI THÊM Java 8+ (JDK/JRE) riêng, py_vncorenlp không tự cài Java
 underthesea  # dùng trong legal_preprocessor.py (fallback nếu VnCoreNLP lỗi)
-
-# Ghi chú: các thành viên khác nên bổ sung thêm dependency riêng của module mình vào đây
-# (vd faiss-cpu cho src/retrieval, qdrant-client cho src/vectorstore nếu dùng
-# Qdrant CHẠY LOCAL qua Docker - KHÔNG dùng Qdrant Cloud, xem cảnh báo vi phạm quy định
-# đã trao đổi trong nhóm).
