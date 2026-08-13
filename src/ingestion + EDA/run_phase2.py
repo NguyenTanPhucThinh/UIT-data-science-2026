@@ -25,6 +25,12 @@ if "JAVA_HOME" not in os.environ:
         os.environ["JAVA_HOME"] = default_java
 
 import py_vncorenlp
+from pyvi import ViTokenizer  # BUG (Kiên): fast_tokenize_text() gọi ViTokenizer.tokenize() nhưng
+# thiếu import này - NameError: name 'ViTokenizer' is not defined. Thêm import trực tiếp ở đây.
+# LƯU Ý: dù rdrsegmenter (VnCoreNLP, khởi tạo bên dưới) được load, thực tế fast_tokenize_text()
+# KHÔNG hề gọi rdrsegmenter - toàn bộ tokenize thật sự đi qua PyVi (ViTokenizer.tokenize), không
+# phải VnCoreNLP như report_content ở cuối file mô tả. Đáng báo lại cho Kiên - có thể là chủ ý
+# (PyVi nhanh hơn) nhưng docstring/report đang ghi sai công cụ thực dùng.
 
 rdrsegmenter = None
 

@@ -252,6 +252,17 @@ def main() -> None:
     else:
         model.fit(**fit_kwargs)
 
+    # QUAN TRỌNG: gọi lưu tường minh, KHÔNG chỉ tin fit(output_path=...) tự lưu cuối cùng - bản
+    # sentence-transformers mới (Trainer-based bên trong) có thể không auto-save ở output_path
+    # như API cũ nữa (đã gặp trường hợp train xong 1h45p nhưng models/reranker-ft trống rỗng,
+    # KHÔNG báo lỗi gì - fit() chạy xong bình thường, chỉ là không có file nào được ghi ra đĩa).
+    model.save(args.output_dir)
+    if not (Path(args.output_dir) / "config.json").exists():
+        logger.error(
+            "CẢNH BÁO: đã gọi model.save(%s) nhưng vẫn KHÔNG thấy config.json - kiểm tra lại "
+            "quyền ghi thư mục / dung lượng đĩa trống trước khi train lại.", args.output_dir,
+        )
+        sys.exit(1)
     logger.info("Đã lưu reranker fine-tune tại: %s", args.output_dir)
     logger.info(
         "Bước tiếp theo: chạy lại pipeline retrieval + rerank với model này, rồi dùng "

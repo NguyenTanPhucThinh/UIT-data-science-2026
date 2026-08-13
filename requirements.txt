@@ -15,6 +15,7 @@ rank_bm25>=0.2.2  # dùng trong bm25_baseline.py / full_pipeline_eval.py (nhánh
 # --- src/ingestion + EDA (Đoàn Quốc Kiên) ---
 py_vncorenlp>=0.1.4  # word segmentation - CẦN CÀI THÊM Java 8+ (JDK/JRE) riêng, py_vncorenlp không tự cài Java
 underthesea  # dùng trong legal_preprocessor.py (fallback nếu VnCoreNLP lỗi)
+pyvi  # dùng trong run_phase2.py (fast_tokenize_text() - ViTokenizer.tokenize()) - thiếu trong bản requirements.txt gốc, gây NameError
 
 # Ghi chú: các thành viên khác nên bổ sung thêm dependency riêng của module mình vào đây
 # (vd faiss-cpu cho src/retrieval, qdrant-client cho src/vectorstore nếu dùng

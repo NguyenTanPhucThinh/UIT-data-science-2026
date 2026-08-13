@@ -2,6 +2,17 @@
 # Cách chạy: mở PowerShell tại thư mục UIT-data-science-2026, gõ:  .\run_pipeline_stage1.ps1
 # Nếu bị chặn bởi execution policy ("scripts is disabled on this system"), chạy:
 #   powershell -ExecutionPolicy Bypass -File run_pipeline_stage1.ps1
+#
+# *** QUAN TRỌNG (2026-08-12) - đã sửa bug thiếu prefix "query: "/"passage: " *** bqbbao6/VN_legal_embedding_512
+# fine-tune từ intfloat/multilingual-e5-base (bi-encoder E5-style, đã xác nhận qua model card
+# HuggingFace) - BẮT BUỘC prefix này để encode đúng, nếu không Recall bị đánh giá thấp hơn thực
+# tế. finetune_embedding.py/baseline_retrieval.py/full_pipeline_eval.py giờ TỰ ĐỘNG thêm prefix
+# (mặc định, không cần sửa gì thêm). NHƯNG script này có logic tự BỎ QUA bước train nếu
+# models/vietnamese-legal-embedding-ft đã có sẵn file - nếu bạn đã train model đó TRƯỚC khi có
+# fix này (model cũ KHÔNG có prefix), phải XÓA thư mục models/vietnamese-legal-embedding-ft
+# (và xóa luôn outputs/chunks_corpus_embeddings__ft.npz nếu có) rồi chạy lại, nếu không script sẽ
+# tự bỏ qua và tiếp tục dùng model cũ/cache cũ (sai). Reranker (CrossEncoder) KHÔNG bị ảnh hưởng
+# bởi prefix này - model reranker cũ vẫn dùng được bình thường, không cần train lại.
 
 # Cac buoc co --output-dir: neu thu muc do da co san file (model da train xong tu lan chay
 # truoc bi ngat giua chung), TU DONG BO QUA - khong train lai tu dau, tiet kiem thoi gian.

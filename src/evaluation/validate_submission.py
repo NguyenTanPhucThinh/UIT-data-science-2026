@@ -11,7 +11,8 @@ Kiểm tra:
      (vd public-official.json) - Task 2 bắt buộc đủ mọi câu hỏi, Task 1 nên làm tương tự
      cho chắc dù thể lệ Task 1 không nêu rõ ràng buộc này.
 
-Cách dùng:
+Cách dùng (--corpus chấp nhận CẢ selected-contexts.zip LẪN thư mục đã giải nén sẵn, vd
+data/raw/selected-contexts nếu build_pipeline.py đã tự giải nén và xóa file .zip gốc):
     python -m src.evaluation.validate_submission \\
         --predictions outputs/submission.json \\
         --corpus data/raw/selected-contexts.zip \\
@@ -21,24 +22,25 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-import zipfile
+from pathlib import Path
 from typing import List, Optional, Set
 
-
-def load_valid_doc_ids(corpus_zip_path: str) -> Set[str]:
-    ids: Set[str] = set()
-    pattern = re.compile(r"context_(\d+)\.json$")
-    with zipfile.ZipFile(corpus_zip_path) as z:
-        for name in z.namelist():
-            m = pattern.search(name)
-            if m:
-                ids.add(m.group(1))
-    return ids
+try:
+    from ..training.data_utils import CorpusReader
+except ImportError:  # cho phép chạy trực tiếp
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from src.training.data_utils import CorpusReader
 
 
-def validate(predictions_path: str, corpus_zip_path: Optional[str], questions_path: Optional[str]) -> List[str]:
+def load_valid_doc_ids(corpus_path: str) -> Set[str]:
+    """Dùng CorpusReader (data_utils.py) để hỗ trợ CẢ selected-contexts.zip lẫn thư mục đã giải
+    nén - trước đây hàm này tự đọc thẳng bằng zipfile.ZipFile nên sẽ crash nếu build_pipeline.py
+    đã tự giải nén (xóa mất file .zip gốc, chỉ còn thư mục)."""
+    return set(CorpusReader(corpus_path).ids())
+
+
+def validate(predictions_path: str, corpus_path: Optional[str], questions_path: Optional[str]) -> List[str]:
     errors: List[str] = []
     warnings: List[str] = []
 
@@ -51,7 +53,7 @@ def validate(predictions_path: str, corpus_zip_path: Optional[str], questions_pa
     if not isinstance(data, dict):
         return ["File gốc phải là JSON Object (key=question_id)"]
 
-    valid_ids = load_valid_doc_ids(corpus_zip_path) if corpus_zip_path else None
+    valid_ids = load_valid_doc_ids(corpus_path) if corpus_path else None
 
     for qid, item in data.items():
         if not isinstance(item, dict):
@@ -93,7 +95,7 @@ def validate(predictions_path: str, corpus_zip_path: Optional[str], questions_pa
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kiểm tra định dạng submission.json trước khi nộp")
     parser.add_argument("--predictions", required=True)
-    parser.add_argument("--corpus", default=None, help="Đường dẫn selected-contexts.zip để kiểm tra document_id có tồn tại")
+    parser.add_argument("--corpus", default=None, help="Đường dẫn selected-contexts.zip HOẶC thư mục đã giải nén, để kiểm tra document_id có tồn tại")
     parser.add_argument("--questions", default=None, help="File câu hỏi tham chiếu (vd public-official.json) để kiểm tra không thiếu câu hỏi")
     args = parser.parse_args()
 

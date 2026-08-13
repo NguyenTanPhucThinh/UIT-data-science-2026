@@ -39,6 +39,23 @@ src/training/split_train_json.py, xem docs/... - CÙNG bộ qid với val_prepro
     python -m src.evaluation.evaluate \\
         --ground-truth data/processed/val_split_20.json \\
         --predictions outputs/full_pipeline_predictions.json
+
+QUAN TRỌNG - prefix "query: "/"passage: " (nhánh DENSE): bqbbao6/VN_legal_embedding_512
+fine-tune từ intfloat/multilingual-e5-base (đã xác nhận qua model card HuggingFace), là
+bi-encoder bất đối xứng kiểu E5 - BẮT BUỘC "query: " trước câu hỏi, "passage: " trước chunk
+corpus khi encode DENSE, nếu không similarity gần như ngẫu nhiên. Script này tự thêm 2 prefix
+đó mặc định (đổi bằng --query-prefix/--passage-prefix, truyền "" để tắt nếu dùng model khác).
+Nhánh BM25 (sparse) và bước RERANK (cross-encoder, ghép (question, passage) làm 1 chuỗi rồi
+chấm điểm) KHÔNG dùng prefix này - đó là quy ước riêng của bi-encoder E5, không áp dụng cho
+BM25/cross-encoder. Nếu bạn có --embedding-cache sinh ra TRƯỚC khi có prefix, XÓA và encode lại.
+
+DEBUG THEO GIAI ĐOẠN (--stage-eval, thêm 2026-08-13): mặc định script chỉ cho ra 1 con số cuối
+cùng (sau rerank+top-k), khó biết giai đoạn nào của pipeline đang yếu. Thêm --stage-eval để ghi
+thêm dự đoán RIÊNG cho từng giai đoạn (dense-only, BM25-only, sau hybrid merge trước rerank) bên
+cạnh kết quả cuối, rồi dùng src/evaluation/stage_report.py để chấm điểm cả 4 giai đoạn cùng lúc
+và xem chênh lệch Recall giữa các giai đoạn liên tiếp - vd nếu dense-only và hybrid_fused gần
+bằng nhau nhưng final thấp hơn hẳn, nghĩa là RERANKER đang làm giảm chất lượng chứ không phải
+retrieval yếu.
 """
 from __future__ import annotations
 
@@ -168,7 +185,11 @@ def load_questions(questions_path: str) -> List[dict]:
 # Giai đoạn 0: encode + index
 # ---------------------------------------------------------------------------
 
-def encode_chunks(model, chunks: List[dict], batch_size: int, cache_path: Optional[str] = None):
+def encode_chunks(
+    model, chunks: List[dict], batch_size: int, cache_path: Optional[str] = None, passage_prefix: str = ""
+):
+    """LƯU Ý: nếu đổi `passage_prefix` giữa các lần chạy, XÓA cache_path cũ trước - cache không
+    lưu lại prefix đã dùng, dùng nhầm cache cũ (không prefix) sẽ cho điểm SAI."""
     import numpy as np
 
     if cache_path:
@@ -184,8 +205,8 @@ def encode_chunks(model, chunks: List[dict], batch_size: int, cache_path: Option
                 len(data["doc_ids"]), len(chunks),
             )
 
-    texts = [c["passage"] for c in chunks]
-    logger.info("Encoding %d chunk (dense)...", len(texts))
+    texts = [passage_prefix + c["passage"] for c in chunks]
+    logger.info("Encoding %d chunk (dense, passage_prefix=%r)...", len(texts), passage_prefix)
     emb = model.encode(
         texts, batch_size=batch_size, show_progress_bar=True,
         convert_to_numpy=True, normalize_embeddings=True,
@@ -289,6 +310,41 @@ def aggregate_to_documents(
 
 
 # ---------------------------------------------------------------------------
+# Stage-eval (2026-08-13): đo Recall/Precision RIÊNG từng giai đoạn pipeline (dense-only,
+# BM25-only, sau hybrid merge - trước rerank, sau rerank+top-k) để xem giai đoạn nào đang yếu,
+# thay vì chỉ có 1 con số cuối cùng. Dùng --stage-eval ở main(), rồi xem báo cáo tổng hợp bằng
+# src/evaluation/stage_report.py.
+# ---------------------------------------------------------------------------
+
+def build_doc_chunk_index(doc_ids: Sequence[str]) -> Dict[str, "object"]:
+    """Precompute (1 LẦN DUY NHẤT, ngoài vòng lặp câu hỏi) danh sách chunk-index thuộc từng
+    document. Dùng cho aggregate_chunks_to_docs_by_score() ở stage-eval - nếu build lại cho mỗi
+    câu hỏi sẽ rất chậm (quét lại toàn bộ chunk N lần, N = số câu hỏi)."""
+    import numpy as np
+
+    groups: Dict[str, List[int]] = defaultdict(list)
+    for idx, doc_id in enumerate(doc_ids):
+        groups[doc_id].append(idx)
+    return {doc_id: np.array(idxs, dtype=np.int64) for doc_id, idxs in groups.items()}
+
+
+def aggregate_chunks_to_docs_by_score(
+    scores, doc_to_indices: Dict[str, "object"], top_k: int = 5
+) -> List[str]:
+    """Gom TOÀN BỘ chunk theo document (dùng chỉ mục đã precompute bằng build_doc_chunk_index -
+    KHÔNG giới hạn top-N chunk như RRF), lấy điểm cao nhất trong các chunk cùng document làm điểm
+    đại diện, trả về top_k document_id theo điểm giảm dần.
+
+    Dùng để đo Recall/Precision THUẦN của MỘT nhánh retrieval riêng lẻ (chỉ dense HOẶC chỉ BM25,
+    KHÔNG qua RRF/candidate-restriction) ở chế độ --stage-eval - KHÔNG dùng cho luồng dự đoán
+    chính thức (luồng chính thức dùng rrf_fuse + aggregate_to_documents + rerank_candidates).
+    """
+    doc_scores = [(doc_id, float(scores[idxs].max())) for doc_id, idxs in doc_to_indices.items()]
+    doc_scores.sort(key=lambda x: -x[1])
+    return [doc_id for doc_id, _ in doc_scores[:top_k]]
+
+
+# ---------------------------------------------------------------------------
 # Giai đoạn 3 + 4: rerank -> top-K
 # ---------------------------------------------------------------------------
 
@@ -326,15 +382,37 @@ def run_pipeline(
     rrf_k: int = 60,
     candidate_docs: int = 20,
     question_batch_size: int = 64,
-) -> Dict[str, List[str]]:
+    query_prefix: str = "",
+    collect_stages: bool = False,
+) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, List[str]]]]:
+    """Trả về (predictions, stage_predictions).
+
+    `predictions` = kết quả CUỐI CÙNG (sau rerank + top-k) - luôn có, không đổi hành vi so với
+    trước đây.
+
+    `stage_predictions` chỉ được điền nếu `collect_stages=True` (bật bằng --stage-eval ở CLI),
+    gồm 3 giai đoạn TRUNG GIAN (đều cắt còn top_k document để so Recall@top_k công bằng với kết
+    quả cuối) - dùng để debug xem giai đoạn nào của pipeline đang yếu:
+        "dense_only"   : chỉ nhánh dense (embedding), KHÔNG qua BM25/RRF/rerank.
+        "bm25_only"    : chỉ nhánh BM25 (sparse), KHÔNG qua dense/RRF/rerank.
+        "hybrid_fused" : sau khi hợp nhất RRF (dense+BM25), TRƯỚC khi rerank.
+    Nếu `collect_stages=False`, trả về stage_predictions = {} (rỗng).
+    """
     import numpy as np
 
     doc_ids = [c["doc_id"] for c in chunks]
     predictions: Dict[str, List[str]] = {}
+    stage_predictions: Dict[str, Dict[str, List[str]]] = (
+        {"dense_only": {}, "bm25_only": {}, "hybrid_fused": {}} if collect_stages else {}
+    )
+    doc_to_indices = build_doc_chunk_index(doc_ids) if collect_stages else None
 
     for start in range(0, len(questions), question_batch_size):
         batch = questions[start : start + question_batch_size]
-        batch_texts = [q["question"] for q in batch]
+        # query_prefix chỉ dùng cho nhánh DENSE (embedding_model.encode ngay dưới đây) - BM25
+        # (q_tokens ở dưới) và rerank (dùng q["question"] gốc, không prefix) KHÔNG áp dụng prefix
+        # này, vì đó là quy ước riêng của bi-encoder E5-style.
+        batch_texts = [query_prefix + q["question"] for q in batch]
         batch_dense_emb = embedding_model.encode(
             batch_texts, batch_size=question_batch_size, convert_to_numpy=True, normalize_embeddings=True
         ).astype(np.float32)
@@ -354,9 +432,21 @@ def run_pipeline(
 
             predictions[q["question_id"]] = top_docs
 
+            if collect_stages:
+                qid = q["question_id"]
+                stage_predictions["dense_only"][qid] = aggregate_chunks_to_docs_by_score(
+                    dense_scores, doc_to_indices, top_k
+                )
+                stage_predictions["bm25_only"][qid] = aggregate_chunks_to_docs_by_score(
+                    bm25_scores, doc_to_indices, top_k
+                )
+                # candidates đã sort giảm dần theo RRF score (aggregate_to_documents) - lấy top_k
+                # đầu tiên để so Recall@top_k công bằng với kết quả cuối (TRƯỚC khi qua rerank).
+                stage_predictions["hybrid_fused"][qid] = [doc_id for doc_id, _, _ in candidates[:top_k]]
+
         logger.info("Đã xử lý %d/%d câu hỏi", min(start + question_batch_size, len(questions)), len(questions))
 
-    return predictions
+    return predictions, stage_predictions
 
 
 def main() -> None:
@@ -376,6 +466,33 @@ def main() -> None:
     parser.add_argument("--embedding-cache", default=None)
     parser.add_argument("--limit-questions", type=int, default=None, help="Chỉ chạy N câu hỏi đầu (debug nhanh)")
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--query-prefix", default="query: ",
+        help='Prefix thêm trước câu hỏi khi encode DENSE (E5-style, mặc định "query: "). KHÔNG áp dụng cho BM25/rerank. Truyền "" để tắt.',
+    )
+    parser.add_argument(
+        "--passage-prefix", default="passage: ",
+        help='Prefix thêm trước mỗi chunk khi encode DENSE (E5-style, mặc định "passage: "). KHÔNG áp dụng cho BM25/rerank. Truyền "" để tắt.',
+    )
+    parser.add_argument(
+        "--fp16-inference", dest="fp16_inference", action="store_true", default=True,
+        help="Cast embedding model sang fp16 trên GPU để encode nhanh hơn (mặc định BẬT, chỉ ảnh hưởng inference, không train nên không cần lo mất ổn định).",
+    )
+    parser.add_argument(
+        "--no-fp16-inference", dest="fp16_inference", action="store_false",
+        help="Tắt fp16, encode ở fp32 (chậm hơn nhưng an toàn nếu nghi ngờ fp16 làm sai kết quả).",
+    )
+    parser.add_argument(
+        "--stage-eval", action="store_true", default=False,
+        help=(
+            "Bật chế độ debug theo giai đoạn (2026-08-13): ngoài file --output (kết quả CUỐI, sau "
+            "rerank+top-k, dùng để nộp bài như bình thường), ghi thêm 3 file <output>.dense_only.json, "
+            "<output>.bm25_only.json, <output>.hybrid_fused.json - dự đoán RIÊNG từng giai đoạn "
+            "(chỉ dense / chỉ BM25 / sau hybrid merge trước rerank). Chấm điểm từng file bằng "
+            "src/evaluation/stage_report.py để xem giai đoạn nào đang yếu. Chậm hơn bình thường "
+            "một chút (thêm 2 bước gom chunk->document cho dense-only/BM25-only mỗi câu hỏi)."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -390,6 +507,12 @@ def main() -> None:
         sys.exit(1)
 
     device = resolve_device(args.device)
+    if device == "cuda":
+        import torch
+        # TF32 - tăng tốc matmul trên GPU Ampere+ (RTX 3060 trở lên) gần như miễn phí, không
+        # đánh đổi gì đáng kể (giống đã áp dụng bên finetune_reranker.py).
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     chunks = load_chunks(args.chunks)
     questions = load_questions(args.questions)
@@ -398,13 +521,33 @@ def main() -> None:
 
     logger.info("Load embedding model: %s", args.embedding_model)
     embedding_model = SentenceTransformer(args.embedding_model, device=device)
+    if device == "cuda" and args.fp16_inference:
+        # Encode ở fp16 - vì đây là INFERENCE (không backward/train) nên không cần lo loss
+        # scaling/mất ổn định như lúc train - trên GPU có tensor core (Ampere+) thường nhanh hơn
+        # đáng kể so với fp32. Nếu tốc độ vẫn không đổi sau khi bật, đa phần là do model/độ dài
+        # chunk đã bão hoà compute chứ không phải do batch size hay dtype - không phải mọi máy
+        # đều được lợi bằng nhau.
+        try:
+            embedding_model = embedding_model.half()
+            logger.info("Đã cast embedding model sang fp16 để encode nhanh hơn (dùng --no-fp16-inference để tắt).")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Không cast được model sang fp16 (%s) - encode ở fp32 như bình thường.", e)
     logger.info("Load reranker model: %s", args.reranker_model)
     reranker_model = CrossEncoder(args.reranker_model, num_labels=1, device=device)
 
-    chunk_embeddings = encode_chunks(embedding_model, chunks, args.batch_size, args.embedding_cache)
+    logger.info(
+        'Dùng prefix E5-style cho nhánh dense: query_prefix=%r, passage_prefix=%r (đổi bằng --query-prefix/--passage-prefix nếu model khác không cần)',
+        args.query_prefix, args.passage_prefix,
+    )
+    chunk_embeddings = encode_chunks(
+        embedding_model, chunks, args.batch_size, args.embedding_cache, passage_prefix=args.passage_prefix
+    )
     bm25_index = build_bm25_index(chunks)
 
-    predictions = run_pipeline(
+    if args.stage_eval:
+        logger.info("--stage-eval BẬT: sẽ ghi thêm dự đoán riêng từng giai đoạn (dense_only/bm25_only/hybrid_fused).")
+
+    predictions, stage_predictions = run_pipeline(
         embedding_model,
         reranker_model,
         chunks,
@@ -417,6 +560,8 @@ def main() -> None:
         rrf_k=args.rrf_k,
         candidate_docs=args.candidate_docs,
         question_batch_size=args.question_batch_size,
+        query_prefix=args.query_prefix,
+        collect_stages=args.stage_eval,
     )
 
     output_path = Path(args.output)
@@ -425,10 +570,23 @@ def main() -> None:
         json.dump({qid: {"answer": docs} for qid, docs in predictions.items()}, f, ensure_ascii=False, indent=2)
 
     logger.info("Đã lưu %d dự đoán tại: %s", len(predictions), args.output)
-    logger.info(
-        "Bước tiếp theo: python -m src.evaluation.evaluate --ground-truth %s --predictions %s",
-        args.questions, args.output,
-    )
+
+    if args.stage_eval:
+        for stage_key, stage_preds in stage_predictions.items():
+            stage_path = output_path.with_suffix(f".{stage_key}{output_path.suffix}")
+            with open(stage_path, "w", encoding="utf-8") as f:
+                json.dump({qid: {"answer": docs} for qid, docs in stage_preds.items()}, f, ensure_ascii=False, indent=2)
+            logger.info("Đã lưu dự đoán giai đoạn '%s' tại: %s", stage_key, stage_path)
+        logger.info(
+            "Bước tiếp theo (báo cáo tổng hợp từng giai đoạn): python -m src.evaluation.stage_report "
+            "--ground-truth <val_split_20.json hoặc tương tự> --base %s",
+            args.output,
+        )
+    else:
+        logger.info(
+            "Bước tiếp theo: python -m src.evaluation.evaluate --ground-truth %s --predictions %s",
+            args.questions, args.output,
+        )
 
 
 if __name__ == "__main__":
