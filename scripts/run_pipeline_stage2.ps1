@@ -1,8 +1,17 @@
 # Giai đoạn 2 + 3 (train FULL trên toàn bộ train.json, rồi dự đoán + đóng gói submission.zip).
 # CHỈ chạy sau khi Giai đoạn 1 (run_pipeline_stage1.ps1) đã cho thấy hybrid pipeline (embedding
 # fine-tune + reranker + BM25) cải thiện rõ so với baseline 0.7806/0.1657 trên val_split_20.
-# Cách chạy: mở PowerShell tại thư mục UIT-data-science-2026, gõ:  .\run_pipeline_stage2.ps1
-# Nếu bị chặn bởi execution policy, chạy:  powershell -ExecutionPolicy Bypass -File run_pipeline_stage2.ps1
+#
+# *** CAP NHAT (2026-08-13) - file nay chuyen vao thu muc con scripts\ (de gon thu muc goc) ***
+# PHAI chay tu thu muc GOC UIT-data-science-2026 (khong phai tu ben trong scripts\) - vi tat ca
+# duong dan trong script deu la duong dan tuong doi, tinh theo thu muc dang dung.
+#
+# Cách chạy: mở PowerShell tại thư mục UIT-data-science-2026 (thư mục GỐC), gõ:
+#   .\scripts\run_pipeline_stage2.ps1
+# Nếu bị chặn bởi execution policy, chạy:  powershell -ExecutionPolicy Bypass -File scripts\run_pipeline_stage2.ps1
+#
+# *** CAP NHAT (2026-08-13) - da don lai thu muc outputs/ *** cache .npz -> outputs/cache/,
+# prediction .json -> outputs/predictions/, file .zip da nop -> outputs/submissions/.
 
 function Invoke-Step($desc, $cmd, $skipIfExists = $null) {
     Write-Host ""
@@ -40,12 +49,12 @@ Invoke-Step "2/4 - Fine-tune reranker (FULL data, hard negatives, cau hinh da ki
 # BM25 se khop tu kem chinh xac hon han so voi luc do tren val_preprocessed.jsonl, lam thap diem
 # gia gia tao (khong phai do model kem, ma do lech tokenize giua cau hoi va corpus).
 Invoke-Step "3/4 - Du doan tren public-official.json (dung ban da tach tu)" `
-    "python -m src.evaluation.full_pipeline_eval --embedding-model models/vietnamese-legal-embedding-ft-full --reranker-model models/reranker-ft-full --chunks data/processed/chunks_corpus.jsonl --questions data/processed/public_test_preprocessed.jsonl --output outputs/submission.json --embedding-cache outputs/chunks_corpus_embeddings__ft_full.npz --batch-size 128"
+    "python -m src.evaluation.full_pipeline_eval --embedding-model models/vietnamese-legal-embedding-ft-full --reranker-model models/reranker-ft-full --chunks data/processed/chunks_corpus.jsonl --questions data/processed/public_test_preprocessed.jsonl --output outputs/predictions/submission.json --embedding-cache outputs/cache/chunks_corpus_embeddings__ft_full.npz --batch-size 128"
 
 # Kiem tra dinh dang truoc khi dong goi - BAT BUOC, tranh nop file sai dinh dang mat luot submit.
 Invoke-Step "4/4 - Kiem tra dinh dang submission.json" `
-    "python -m src.evaluation.validate_submission --predictions outputs/submission.json --corpus data/raw/selected-contexts --questions data/raw/public-official.json"
+    "python -m src.evaluation.validate_submission --predictions outputs/predictions/submission.json --corpus data/raw/selected-contexts --questions data/raw/public-official.json"
 
 Write-Host ""
-Write-Host "=== HOAN TAT - dong goi thu cong: nen CHI outputs/submission.json (khong kem thu muc con) thanh submission.zip roi nop ===" -ForegroundColor Green
-Write-Host '    Compress-Archive -Path outputs\submission.json -DestinationPath outputs\submission.zip -Force' -ForegroundColor DarkGray
+Write-Host "=== HOAN TAT - dong goi thu cong: nen CHI outputs/predictions/submission.json (khong kem thu muc con) thanh submission.zip trong outputs/submissions/ roi nop ===" -ForegroundColor Green
+Write-Host '    Compress-Archive -Path outputs\predictions\submission.json -DestinationPath outputs\submissions\submission.zip -Force' -ForegroundColor DarkGray

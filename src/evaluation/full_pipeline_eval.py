@@ -357,7 +357,11 @@ def rerank_candidates(
         return []
 
     pairs = [(question, chunks[chunk_idx]["passage"]) for _, chunk_idx, _ in candidates]
-    scores = reranker_model.predict(pairs)
+    # show_progress_bar=False: hàm này gọi 1 LẦN CHO MỖI CÂU HỎI (vòng lặp bên ngoài) - nếu không
+    # tắt tường minh, sentence-transformers tự in progress bar riêng mỗi lần gọi (mặc định bật khi
+    # log level <= INFO), ra hàng nghìn dòng "Batches: 100%|..." rác màn hình, không có ích (mỗi
+    # câu hỏi chỉ có vài chục candidate, chấm điểm gần như tức thì).
+    scores = reranker_model.predict(pairs, show_progress_bar=False)
 
     reranked = sorted(
         zip([doc_id for doc_id, _, _ in candidates], scores), key=lambda x: -x[1]
@@ -413,8 +417,14 @@ def run_pipeline(
         # (q_tokens ở dưới) và rerank (dùng q["question"] gốc, không prefix) KHÔNG áp dụng prefix
         # này, vì đó là quy ước riêng của bi-encoder E5-style.
         batch_texts = [query_prefix + q["question"] for q in batch]
+        # show_progress_bar=False: cùng lý do như rerank_candidates() bên dưới - gọi lặp lại nhiều
+        # lần (1 lần/batch câu hỏi), để mặc định sẽ in progress bar rác mỗi lần gọi.
         batch_dense_emb = embedding_model.encode(
-            batch_texts, batch_size=question_batch_size, convert_to_numpy=True, normalize_embeddings=True
+            batch_texts,
+            batch_size=question_batch_size,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
         ).astype(np.float32)
 
         # (batch, n_chunks) - toàn bộ corpus embeddings đã nằm sẵn trong RAM (giống baseline_retrieval.py)
@@ -461,8 +471,8 @@ def main() -> None:
     parser.add_argument("--bm25-top-n", type=int, default=100, help="Số chunk top BM25 đưa vào RRF")
     parser.add_argument("--rrf-k", type=int, default=60)
     parser.add_argument("--candidate-docs", type=int, default=20, help="Số document ứng viên đưa vào rerank (giai đoạn 3)")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size encode corpus (dense)")
-    parser.add_argument("--question-batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size encode corpus (dense)")
+    parser.add_argument("--question-batch-size", type=int, default=128)
     parser.add_argument("--embedding-cache", default=None)
     parser.add_argument("--limit-questions", type=int, default=None, help="Chỉ chạy N câu hỏi đầu (debug nhanh)")
     parser.add_argument("--device", default="auto")
@@ -583,9 +593,15 @@ def main() -> None:
             args.output,
         )
     else:
+        # LƯU Ý (bug đã sửa 2026-08-14): KHÔNG dùng args.questions ở đây - đó là file câu hỏi
+        # (--questions), KHÁC với file đáp án (--ground-truth, vd val_split_20.json) mà
+        # evaluate.py cần. Dùng nhầm gây "json.decoder.JSONDecodeError: Extra data" vì file câu
+        # hỏi là .jsonl (nhiều dòng JSON) trong khi evaluate.py đọc như 1 file JSON duy nhất.
         logger.info(
-            "Bước tiếp theo: python -m src.evaluation.evaluate --ground-truth %s --predictions %s",
-            args.questions, args.output,
+            "Bước tiếp theo: python -m src.evaluation.evaluate --ground-truth <vd: "
+            "data/processed/val_split_20.json - file DAP AN, khac voi --questions ben tren> "
+            "--predictions %s",
+            args.output,
         )
 
 

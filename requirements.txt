@@ -15,11 +15,25 @@ accelerate>=1.1.0  # bắt buộc cho model.fit()/CrossEncoder.fit() - lỗi "re
 datasets>=2.19.0
 scikit-learn>=1.3.0
 tqdm>=4.66.0
+sentencepiece>=0.2.0  # (2026-08-13) BẮT BUỘC để load 1 số model reranker/embedding chỉ có "slow"
+# tokenizer (co sentencepiece.bpe.model, KHONG co tokenizer.json) - vd AITeamVN/Vietnamese_Reranker.
+# Thieu goi nay gay loi "ValueError: Unrecognized processing class... Can't instantiate a
+# processor, a tokenizer..." khi load model do qua CrossEncoder/AutoTokenizer. BAAI/bge-reranker-v2-m3
+# co san tokenizer.json (fast tokenizer) nen truoc day khong can goi nay - chi lo ra khi thu model khac.
+tiktoken  # (2026-08-13) ban transformers/sentence-transformers moi tren may thu nhieu "dinh dang"
+# tokenizer khac nhau khi auto-detect (sentencepiece, tiktoken, ...) va bao loi cung ngay khi thieu
+# goi cho 1 trong so do, du model dang load KHONG thuc su dung tiktoken. Neu sau nay con gap
+# "ValueError: X is required..." tuong tu voi goi khac, cu pip install X roi thu lai.
+protobuf  # (2026-08-13) BAT BUOC de convert tokenizer "slow" (sentencepiece.bpe.model) sang "fast"
+# (SentencePieceExtractor trong transformers/convert_slow_tokenizer.py can protobuf). Thieu goi nay
+# KHONG bao loi protobuf ro rang - code roi xuong nhanh du phong khac (tiktoken parser) va bao loi
+# rat kho hieu: "ValueError: Error parsing line b'\x0e' in .../sentencepiece.bpe.model" (nhin giong
+# file model bi hong nhung KHONG phai - chi can cai protobuf la het loi, khong can xoa cache/tai lai).
 
 # --- src/ingestion + EDA (Đoàn Quốc Kiên) ---
 py_vncorenlp>=0.1.4  # word segmentation - CẦN CÀI THÊM Java 8+ (JDK/JRE) riêng, py_vncorenlp không tự cài Java
 underthesea  # dùng trong legal_preprocessor.py (fallback nếu VnCoreNLP lỗi)
-pyvi
+pyvi  # dùng trong run_phase2.py (fast_tokenize_text() - ViTokenizer.tokenize())
 
 # Ghi chú: các thành viên khác nên bổ sung thêm dependency riêng của module mình vào đây
 # (vd faiss-cpu cho src/retrieval, qdrant-client cho src/vectorstore nếu dùng

@@ -1,7 +1,14 @@
 # Giai đoạn 1 (train & evaluate LOCAL trên 80/20) - chạy 1 lần, tự dừng nếu có bước lỗi.
-# Cách chạy: mở PowerShell tại thư mục UIT-data-science-2026, gõ:  .\run_pipeline_stage1.ps1
+#
+# *** CAP NHAT (2026-08-13) - file nay chuyen vao thu muc con scripts\ (de gon thu muc goc) ***
+# PHAI chay tu thu muc GOC UIT-data-science-2026 (khong phai tu ben trong scripts\) - vi tat ca
+# duong dan trong script deu la duong dan tuong doi (data/..., models/..., outputs/...) tinh theo
+# thu muc dang dung, khong phai theo vi tri file .ps1.
+#
+# Cách chạy: mở PowerShell tại thư mục UIT-data-science-2026 (thư mục GỐC), gõ:
+#   .\scripts\run_pipeline_stage1.ps1
 # Nếu bị chặn bởi execution policy ("scripts is disabled on this system"), chạy:
-#   powershell -ExecutionPolicy Bypass -File run_pipeline_stage1.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts\run_pipeline_stage1.ps1
 #
 # *** QUAN TRỌNG (2026-08-12) - đã sửa bug thiếu prefix "query: "/"passage: " *** bqbbao6/VN_legal_embedding_512
 # fine-tune từ intfloat/multilingual-e5-base (bi-encoder E5-style, đã xác nhận qua model card
@@ -13,6 +20,12 @@
 # (và xóa luôn outputs/chunks_corpus_embeddings__ft.npz nếu có) rồi chạy lại, nếu không script sẽ
 # tự bỏ qua và tiếp tục dùng model cũ/cache cũ (sai). Reranker (CrossEncoder) KHÔNG bị ảnh hưởng
 # bởi prefix này - model reranker cũ vẫn dùng được bình thường, không cần train lại.
+#
+# *** CAP NHAT (2026-08-13) - da don lai thu muc outputs/ *** File .npz cache va .json prediction
+# gio nam trong outputs/cache/ va outputs/predictions/ (truoc day nam thang o outputs/) - de gon
+# hon, tach ro cache (nang, co the xoa/regenerate) khoi ket qua (nhe, nen giu lam bang chung cho
+# Data Statement/Model Card). Neu ban co script/lenh cu tu tay dung duong dan outputs/*.npz hoac
+# outputs/*.json cu, doi lai theo cau truc moi nay.
 
 # Cac buoc co --output-dir: neu thu muc do da co san file (model da train xong tu lan chay
 # truoc bi ngat giua chung), TU DONG BO QUA - khong train lai tu dau, tiet kiem thoi gian.
@@ -45,10 +58,10 @@ Invoke-Step "2/4 - Fine-tune reranker (80%, hard negatives, rut gon)" `
     "models/reranker-ft"
 
 Invoke-Step "3/4 - Pipeline hybrid tren tap validate (20%)" `
-    "python -m src.evaluation.full_pipeline_eval --embedding-model models/vietnamese-legal-embedding-ft --reranker-model models/reranker-ft --chunks data/processed/chunks_corpus.jsonl --questions data/processed/val_preprocessed.jsonl --output outputs/full_pipeline_predictions.json --embedding-cache outputs/chunks_corpus_embeddings__ft.npz"
+    "python -m src.evaluation.full_pipeline_eval --embedding-model models/vietnamese-legal-embedding-ft --reranker-model models/reranker-ft --chunks data/processed/chunks_corpus.jsonl --questions data/processed/val_preprocessed.jsonl --output outputs/predictions/full_pipeline_predictions.json --embedding-cache outputs/cache/chunks_corpus_embeddings__ft.npz"
 
 Invoke-Step "4/4 - Cham diem (Recall/Precision chinh thuc BTC)" `
-    "python -m src.evaluation.evaluate --ground-truth data/processed/val_split_20.json --predictions outputs/full_pipeline_predictions.json"
+    "python -m src.evaluation.evaluate --ground-truth data/processed/val_split_20.json --predictions outputs/predictions/full_pipeline_predictions.json"
 
 Write-Host ""
 Write-Host "=== HOAN TAT GIAI DOAN 1 - xem so Recall/Precision o tren, so voi moc dense-only 0.7806/0.1657 ===" -ForegroundColor Green
