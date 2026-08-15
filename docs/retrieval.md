@@ -28,7 +28,7 @@ The retrieval system employs a hybrid search strategy combining sparse BM25 keyw
                    Top-20 Candidate Documents
                                ▼
                           Reranker
-               (AITeamVN/Vietnamese_Reranker)
+          (fine-tune từ BAAI/bge-reranker-v2-m3)
                                ▼
                   Top-5 Final Document IDs
 ```
@@ -81,8 +81,9 @@ The integer index `i` (0-based) across all three artifacts corresponds to the ex
 - **Normalization**: `normalize_embeddings=True` (Cosine similarity via FAISS Inner Product `IndexFlatIP`).
 
 ### Reranker Model
-- **Model Name**: `AITeamVN/Vietnamese_Reranker`
-- **HuggingFace Hub**: [https://huggingface.co/AITeamVN/Vietnamese_Reranker](https://huggingface.co/AITeamVN/Vietnamese_Reranker)
+- **Model Base**: `BAAI/bge-reranker-v2-m3`
+- **Checkpoint chính**: `models/reranker-ft-full`
+- **HuggingFace Hub**: [https://huggingface.co/BAAI/bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3)
 - **Input Format**: Pairs of `(question, representative_chunk_passage)`.
 
 ---

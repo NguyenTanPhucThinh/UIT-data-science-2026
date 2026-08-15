@@ -38,6 +38,10 @@ import random
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -152,6 +156,25 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument(
+        "--steps-per-epoch",
+        type=int,
+        default=None,
+        help="Giới hạn số step mỗi epoch; hữu ích cho smoke test GPU, bỏ trống để train đầy đủ",
+    )
+    parser.add_argument(
+        "--use-amp",
+        action="store_true",
+        help="Dùng automatic mixed precision trên CUDA để giảm VRAM và tăng tốc",
+    )
+    parser.add_argument(
+        "--checkpoint-path",
+        default=None,
+        help="Thư mục lưu checkpoint trung gian để có thể resume khi bị gián đoạn",
+    )
+    parser.add_argument("--checkpoint-save-steps", type=int, default=100)
+    parser.add_argument("--checkpoint-save-total-limit", type=int, default=2)
+    parser.add_argument("--resume-from-checkpoint", action="store_true")
     parser.add_argument("--max-chars", type=int, default=2000, help="Độ dài tối đa (ký tự) mỗi chunk dùng để train")
     parser.add_argument("--hard-negatives", action="store_true", help="Bật hard negative mining (TripletLoss thay vì MultipleNegativesRankingLoss)")
     parser.add_argument("--hard-negative-top-k", type=int, default=5)
@@ -170,7 +193,8 @@ def main() -> None:
     random.seed(args.seed)
 
     try:
-        from sentence_transformers import InputExample, SentenceTransformer, losses
+        from sentence_transformers import InputExample, SentenceTransformer
+        from sentence_transformers.sentence_transformer import losses
         from torch.utils.data import DataLoader
     except ImportError:
         logger.error(
@@ -179,9 +203,18 @@ def main() -> None:
         )
         sys.exit(1)
 
+    if args.device == "cuda":
+        import torch
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "--device cuda was requested but CUDA is unavailable. Install a CUDA-enabled "
+                "PyTorch wheel and verify torch.cuda.is_available() first."
+            )
     device = resolve_device(args.device)
     logger.info("Load base model: %s", args.base_model)
     model = SentenceTransformer(args.base_model, device=device)
+    logger.info("Training device resolved to: %s", model.device)
 
     logger.info(
         'Dùng prefix E5-style: query_prefix=%r, passage_prefix=%r (đổi bằng --query-prefix/--passage-prefix nếu model khác không cần)',
@@ -210,16 +243,39 @@ def main() -> None:
         logger.info("Dùng MultipleNegativesRankingLoss với %d cặp (in-batch negatives)", len(train_examples))
 
     train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=args.batch_size)
-    warmup_steps = int(len(train_dataloader) * args.epochs * 0.1)
-    logger.info("Bắt đầu fine-tune: %d epoch, batch_size=%d, warmup_steps=%d", args.epochs, args.batch_size, warmup_steps)
+    effective_steps_per_epoch = args.steps_per_epoch or len(train_dataloader)
+    warmup_steps = int(effective_steps_per_epoch * args.epochs * 0.1)
+    logger.info(
+        "Bắt đầu fine-tune: %d epoch, batch_size=%d, steps_per_epoch=%d, "
+        "warmup_steps=%d, amp=%s",
+        args.epochs,
+        args.batch_size,
+        effective_steps_per_epoch,
+        warmup_steps,
+        args.use_amp,
+    )
 
     model.fit(
         train_objectives=[(train_dataloader, loss)],
         epochs=args.epochs,
+        steps_per_epoch=args.steps_per_epoch,
         warmup_steps=warmup_steps,
         output_path=args.output_dir,
+        use_amp=args.use_amp,
+        checkpoint_path=args.checkpoint_path,
+        checkpoint_save_steps=args.checkpoint_save_steps,
+        checkpoint_save_total_limit=args.checkpoint_save_total_limit,
+        resume_from_checkpoint=args.resume_from_checkpoint,
         show_progress_bar=True,
     )
+
+    if device == "cuda":
+        import torch
+
+        logger.info(
+            "Peak CUDA memory reserved: %.2f GiB",
+            torch.cuda.max_memory_reserved() / (1024**3),
+        )
 
     logger.info("Đã lưu model fine-tune tại: %s", args.output_dir)
     logger.info(

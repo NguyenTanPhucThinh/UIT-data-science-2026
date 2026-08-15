@@ -21,7 +21,7 @@ Dựa trên cấu trúc thư mục `src`, dưới đây là phương án phân c
     *   Đảm bảo việc lưu trữ và index dữ liệu diễn ra hiệu quả.
     *   Thành viên thực hiện: Nguyễn Tấn Phúc Thịnh, Bùi Diên Gia Bảo
     *  Input: data/processed      
-    *  Output: Qdrant Cloud 
+    *  Output: FAISS local (hoặc Qdrant tự host local; không dùng cloud/API bên thứ ba)
 ## 👤 Thành viên 3 + 5: Core RAG (Cốt lõi Tìm kiếm & Hỏi đáp)
 **Thư mục đảm nhiệm:** `src/retrieval` + `src/reranker` + `src/qa`
 
@@ -30,8 +30,8 @@ Dựa trên cấu trúc thư mục `src`, dưới đây là phương án phân c
     *   Phát triển module QA: tích hợp LLM để sinh ra câu trả lời dựa trên context đã truy xuất được.
     *   Tối ưu prompt engineering.
     *   Thành viên thực hiện: Nguyễn Trường Giang, Bùi Diên Gia Bảo
-    *   Input: Qdrant Cloud
-    *   Output: Một json giống định dạng output task 1
+    *   Input: FAISS local / retrieval artifacts cục bộ
+    *   Output: JSON Task 1 (document IDs) hoặc Task 2 (answer dạng chuỗi)
 ## 👤 Thành viên 4 + 5: Model Tuning & Quality (Huấn luyện & Đánh giá)
 **Thư mục đảm nhiệm:** `src/training` và `src/evaluation`
 

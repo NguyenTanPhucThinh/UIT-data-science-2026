@@ -169,8 +169,7 @@ def resolve_device(requested: str = "auto") -> str:
             'python -c "import torch; print(torch.cuda.is_available())" '
             "- nếu ra False dù có GPU, khả năng cao bản torch đang cài KHÔNG có CUDA. Kiểm tra "
             "bản CUDA của driver bằng lệnh `nvidia-smi`, rồi cài lại torch đúng bản tương ứng "
-            "theo hướng dẫn tại https://pytorch.org/get-started/locally/ "
-            "(vd: pip install torch --index-url https://download.pytorch.org/whl/cu121)."
+            "theo hướng dẫn tại https://pytorch.org/get-started/locally/."
         )
     else:
         try:

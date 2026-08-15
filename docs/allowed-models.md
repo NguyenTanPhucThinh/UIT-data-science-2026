@@ -1,4 +1,4 @@
-# Các model sử dụng trong cuộc thi (UIT-DSC 2026, Task 1 LegalIR)
+# Các model sử dụng trong cuộc thi (UIT-DSC 2026, Task 1 LegalIR + Task 2 LegalQA)
 
 > Cập nhật 2026-08-14. Ràng buộc theo `quy-dinh-cuoc-thi-task1.md` mục 5-6: **tổng tham số toàn bộ
 > pipeline phải dưới 4 tỷ (4B)**, chỉ mã nguồn mở tự vận hành (không API), giấy phép nghiên
@@ -39,14 +39,22 @@ lỗi 401 "Repository Not Found" khi load qua sentence-transformers). File cũng
 | `truro7/vn-law-embedding` | Thay embedding | Chuyên pháp luật VN, chưa xác minh kỹ tên gọi/model card | `danh-sach-model-tham-khao.md` (2026-08-10) |
 | `mainguyen9/vietlegal-harrier-0.6b` | Thay embedding | Chuyên pháp luật VN (~0.6B) | `danh-sach-model-tham-khao.md` (2026-08-10) |
 
-## 🔲 Candidate cho Task 2 (LegalQA — chưa bắt đầu, cần model sinh/LLM)
+## ✅ Đã chọn cho pipeline Task 2 (LegalQA)
+
+| Vai trò | Model | Tham số (~) | Giấy phép | Trạng thái |
+|---|---|---:|---|---|
+| LLM sinh câu trả lời RAG | [`AITeamVN/Vi-Qwen2-1.5B-RAG`](https://huggingface.co/AITeamVN/Vi-Qwen2-1.5B-RAG) | 1.5B | Apache 2.0 | Pipeline local tại `src/qa/` và CLI `src/evaluation/run_legalqa.py` |
+
+**Tổng pipeline ước tính:** retrieval ~846M + LLM ~1.5B = **~2.346B**, dưới trần 4B. Trước
+khi nộp chính thức vẫn phải đo lại số tham số từ đúng checkpoint/revision đã đóng gói.
+
+## 🔲 Candidate dự phòng cho Task 2
 
 | Model | Tham số (~) | Ghi chú |
 |---|---|---|
 | `thangvip/qwen3-1.7b-vietnamese-legal-grpo-phase-2` | 1.7B | Qwen3 fine-tune GRPO chuyên pháp luật VN — candidate hàng đầu cho Task 2 |
 | `ntphuc149/ViLegalQwen2.5-1.5B-Base` | 1.5B | Chuyên pháp luật VN |
 | `ntphuc149/ViLegalQwen3-1.7B-Base` | 1.7B | Chuyên pháp luật VN |
-| `AITeamVN/Vi-Qwen2-1.5B-RAG` | 1.5B | Qwen2 fine-tune cho RAG tiếng Việt |
 
 ⚠️ Nếu Task 1 + Task 2 tính CHUNG 1 trần 4B tham số (cần hỏi lại BTC để chắc chắn), pipeline Task 1
 hiện tại (~846M) + 1 model Task 2 (1.5-1.7B) vẫn nằm dưới trần thoải mái (~2.3-2.6B).

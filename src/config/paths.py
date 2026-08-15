@@ -21,3 +21,7 @@ CHUNKS_CORPUS = PROCESSED_DATA_DIR / "chunks_corpus.jsonl"
 TRAIN_PREPROCESSED = PROCESSED_DATA_DIR / "train_preprocessed.jsonl"
 VAL_PREPROCESSED = PROCESSED_DATA_DIR / "val_preprocessed.jsonl"
 PUBLIC_TEST_PREPROCESSED = PROCESSED_DATA_DIR / "public_test_preprocessed.jsonl"
+
+# Task 2 LegalQA question artifacts. The corpus/chunks above are shared by both tasks.
+TRAIN_2_PREPROCESSED = PROCESSED_DATA_DIR / "train_2_preprocessed.jsonl"
+PUBLIC_TEST_2_PREPROCESSED = PROCESSED_DATA_DIR / "public_test_2_preprocessed.jsonl"

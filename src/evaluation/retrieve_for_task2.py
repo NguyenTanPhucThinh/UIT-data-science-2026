@@ -9,8 +9,8 @@ Tái sử dụng NGUYÊN VẸN logic retrieval đã kiểm chứng của full_pi
 trong claude/submission-log-task1.md, Score PUBLIC 0.8387).
 
 Khác với full_pipeline_eval.py (chỉ xuất document_id, đúng định dạng nộp bài Task 1), script này
-xuất thêm NỘI DUNG ĐẦY ĐỦ của từng document (đọc từ data/raw/selected-contexts/context_<id>.json)
-- vì Task 2 cần văn bản thật để nhét vào prompt cho LLM sinh câu trả lời, không chỉ ID.
+xuất chunk bằng chứng thực sự được reranker chọn, kèm provenance và score. Không nạp toàn văn
+document vì văn bản pháp luật có thể rất dài và làm tràn context window của LLM Task 2.
 
 Mặc định dùng model TỐT NHẤT hiện có (models/vietnamese-legal-embedding-ft-full +
 models/reranker-ft-full - ĐÚNG cấu hình đã dùng tạo submission_v2.zip, Score PUBLIC 0.8387) - đổi
@@ -32,8 +32,8 @@ Cách dùng:
 {
   "<question_id>": {
     "question": "<nội dung câu hỏi>",
-    "documents": [
-      {"doc_id": "...", "text": "<toàn văn tài liệu>", "link": "<nguồn thuvienphapluat.vn>"},
+    "evidence": [
+      {"doc_id": "...", "chunk_id": "...", "passage": "<chunk liên quan>", ...},
       ...
     ]
   }
@@ -59,21 +59,6 @@ except ImportError:  # cho phép chạy trực tiếp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
-
-CONTEXTS_DIR = Path("data/raw/selected-contexts")
-
-
-def load_document_text(doc_id: str) -> dict:
-    """Đọc nội dung đầy đủ 1 document từ data/raw/selected-contexts/context_<doc_id>.json (field
-    'passage' = toàn văn, 'link' = nguồn). Trả về {} + cảnh báo nếu không tìm thấy (không nên xảy
-    ra với doc_id hợp lệ lấy từ chính corpus này)."""
-    path = CONTEXTS_DIR / f"context_{doc_id}.json"
-    if not path.exists():
-        logger.warning("Không tìm thấy file nội dung cho doc_id=%s tại %s", doc_id, path)
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -112,13 +97,6 @@ def main() -> None:
         logger.error("Thiếu rank_bm25. Chạy: pip install rank_bm25")
         sys.exit(1)
 
-    if not CONTEXTS_DIR.exists():
-        logger.error(
-            "Không tìm thấy thư mục %s - script này PHẢI chạy từ thư mục GỐC UIT-data-science-2026.",
-            CONTEXTS_DIR,
-        )
-        sys.exit(1)
-
     device = resolve_device(args.device)
     if device == "cuda":
         import torch
@@ -146,29 +124,22 @@ def main() -> None:
     )
     bm25_index = build_bm25_index(chunks)
 
+    evidence_by_qid: dict[str, list[dict]] = {}
     predictions, _ = run_pipeline(
         embedding_model, reranker_model, chunks, chunk_embeddings, bm25_index, questions,
         top_k=args.top_k, dense_top_n=args.dense_top_n, bm25_top_n=args.bm25_top_n, rrf_k=args.rrf_k,
         candidate_docs=args.candidate_docs, question_batch_size=args.question_batch_size,
-        query_prefix=args.query_prefix, collect_stages=False,
+        query_prefix=args.query_prefix, collect_stages=False, evidence_output=evidence_by_qid,
     )
 
     question_text_by_id = {q["question_id"]: q["question"] for q in questions}
 
     output = {}
-    doc_text_cache: dict = {}
-    for qid, doc_ids in predictions.items():
-        docs = []
-        for doc_id in doc_ids:
-            if doc_id not in doc_text_cache:
-                doc_text_cache[doc_id] = load_document_text(doc_id)
-            content = doc_text_cache[doc_id]
-            docs.append({
-                "doc_id": doc_id,
-                "text": content.get("passage", ""),
-                "link": content.get("link", ""),
-            })
-        output[qid] = {"question": question_text_by_id.get(qid, ""), "documents": docs}
+    for qid in predictions:
+        output[qid] = {
+            "question": question_text_by_id.get(qid, ""),
+            "evidence": evidence_by_qid.get(qid, []),
+        }
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,8 +147,8 @@ def main() -> None:
         json.dump(output, f, ensure_ascii=False, indent=2)
     logger.info("Đã lưu ngữ cảnh truy xuất cho %d câu hỏi tại: %s", len(output), args.output)
     logger.info(
-        "Bàn giao cho Task 2: mỗi câu hỏi có sẵn 'question' + 'documents' (đã xếp theo độ liên "
-        "quan giảm dần, có 'text' toàn văn) - ghép trực tiếp vào prompt RAG, không cần xử lý thêm."
+        "Bàn giao cho Task 2: mỗi câu hỏi có 'question' + 'evidence' đã xếp theo reranker. "
+        "Dùng src.qa.context_builder để mở rộng chunk lân cận và cắt theo token budget của LLM."
     )
 
 

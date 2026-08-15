@@ -22,6 +22,12 @@ Module đánh giá chất lượng hệ thống Task 1 - LegalIR (phụ trách: 
   retrieval thật của Core RAG (`src/retrieval`). Dùng đúng `data/processed/chunks_corpus.jsonl`
   của Kiên (không tự chunk lại). Có thể dùng ngay để tạo submission chất lượng cao trong lúc chờ
   2 nhóm kia hoàn thiện hạ tầng production — xem docstring đầu file để biết cách dùng đầy đủ.
+- `retrieve_for_task2.py` — xuất ranked evidence chunk có provenance/score cho Task 2, không nạp
+  toàn văn document vào prompt.
+- `run_legalqa.py` — pipeline Task 2 end-to-end: retrieval → context budget → local
+  `AITeamVN/Vi-Qwen2-1.5B-RAG` → `submission.json`.
+- `legalqa_metrics.py` / `evaluate_legalqa.py` — METEOR và ROUGE-L local cho câu trả lời tiếng Việt.
+- `validate_legalqa_submission.py` — kiểm schema, question ID, answer rỗng và reasoning wrapper.
 
 ## Cách dùng
 

@@ -9,7 +9,7 @@ cuộc thi (mục "Quy định về mô hình" / "Quy định về API và giấ
 
 ---
 
-## 🔴 Đang mở (cần xử lý)
+## ✅ Đã xử lý trong pipeline hiện tại
 
 ### 1. Qdrant Cloud được ghi làm output của bước Storage & Representation
 - **Phát hiện tại:** `TASK_DISTRIBUTION.md`, mục "Thành viên 2 + 5: Storage & Representation" — Output: "Qdrant Cloud".
@@ -23,9 +23,8 @@ cuộc thi (mục "Quy định về mô hình" / "Quy định về API và giấ
   vì quy định ghi rõ "bao gồm cả API phi thương mại".
 - **Hướng khắc phục đề xuất:** đổi sang Qdrant chạy local qua Docker (tự host, tự kiểm soát),
   hoặc đơn giản hơn là dùng FAISS (thư viện chạy hoàn toàn local, không cần server riêng).
-- **Trạng thái:** người phụ trách (@Nguyễn Huy Hoàng) đã xác nhận sẽ thông báo cho nhóm, đặc
-  biệt bạn Nguyễn Tấn Phúc Thịnh (phụ trách `src/embeddings` + `src/vectorstore`). *Chưa có xác
-  nhận đã đổi sang giải pháp local.*
+- **Trạng thái:** **đã xử lý 2026-08-14** — `TASK_DISTRIBUTION.md` đã đổi output thành FAISS
+  local/Qdrant tự host local; code retrieval hiện dùng FAISS local.
 - **Ngày phát hiện:** 2026-08-11
 
 ### 2. GPT-4o / Gemini xuất hiện trong sơ đồ pipeline Task 2
@@ -38,9 +37,8 @@ cuộc thi (mục "Quy định về mô hình" / "Quy định về API và giấ
   bước "LLM chống hallucination" của Task 2 — ví dụ model đã liệt kê trong
   `docs/allowed-models.md` (thangvip/qwen3-1.7b-vietnamese-legal-grpo-phase-2), hoặc model mở
   khác miễn tổng tham số toàn pipeline vẫn dưới 4 tỷ.
-- **Trạng thái:** CHƯA XÁC NHẬN với người phụ trách Task 2 (`src/qa`, bạn Nguyễn Trường Giang)
-  — có thể chỉ là text minh hoạ khi vẽ sơ đồ (không phải quyết định thật của nhóm), nhưng cần
-  làm rõ và sửa lại sơ đồ nếu đúng vậy để tránh hiểu nhầm về sau.
+- **Trạng thái:** **đã xử lý 2026-08-14** — sơ đồ đã đổi thành
+  `AITeamVN/Vi-Qwen2-1.5B-RAG` chạy local; pipeline ở `src/qa/` không gọi API ngoài.
 - **Ngày phát hiện:** 2026-08-11
 
 ---
@@ -48,8 +46,8 @@ cuộc thi (mục "Quy định về mô hình" / "Quy định về API và giấ
 ## 🟡 Cần theo dõi / rà soát định kỳ (chưa xác nhận vi phạm)
 
 - **Tổng tham số toàn pipeline:** model đề xuất hiện tại (`docs/allowed-models.md`) gồm
-  bqbbao6/VN_legal_embedding_512 + AITeamVN/Vietnamese_Reranker +
-  thangvip/qwen3-1.7b-vietnamese-legal-grpo-phase-2 (~1.7B riêng phần LLM). Cần cộng chính xác
+  bqbbao6/VN_legal_embedding_512 + BAAI/bge-reranker-v2-m3 +
+  AITeamVN/Vi-Qwen2-1.5B-RAG (~1.5B riêng phần LLM). Cần cộng chính xác
   tổng tham số CẢ 3 model (+ bất kỳ model nào thêm sau này) trước khi chốt, đảm bảo dưới 4 tỷ.
   Chưa có số liệu chính thức verify từng model.
 - **`.env.example.txt` đang trống:** sự tồn tại của file này gợi ý nhóm định dùng biến môi
@@ -70,9 +68,9 @@ cuộc thi (mục "Quy định về mô hình" / "Quy định về API và giấ
 
 ---
 
-## ✅ Đã xử lý
+## 🔴 Đang mở
 
-*(chưa có mục nào — cập nhật khi một rủi ro ở trên được xác nhận khắc phục xong)*
+*(Không còn mục đỏ đã biết tại thời điểm cập nhật; vẫn phải hoàn tất các mục rà soát màu vàng.)*
 
 ---
 

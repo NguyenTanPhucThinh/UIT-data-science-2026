@@ -139,7 +139,11 @@ def load_questions(questions_path: str) -> List[dict]:
     if isinstance(data, dict):
         questions = []
         for qid, item in data.items():
-            answer = item.get("answer") or []
+            # Task 1 uses answer=[doc_id, ...], while Task 2 reference files use
+            # answer="generated legal answer". Retrieval must not interpret characters in a
+            # Task 2 answer string as document IDs.
+            raw_answer = item.get("answer")
+            answer = raw_answer if isinstance(raw_answer, list) else []
             questions.append(
                 {
                     "question_id": str(qid),
@@ -348,11 +352,18 @@ def aggregate_chunks_to_docs_by_score(
 # Giai đoạn 3 + 4: rerank -> top-K
 # ---------------------------------------------------------------------------
 
-def rerank_candidates(
-    reranker_model, question: str, candidates: List[Tuple[str, int, float]], chunks: List[dict], top_k: int = 5
-) -> List[str]:
-    """Ghép (câu hỏi, chunk đại diện) cho từng candidate document, chấm điểm bằng cross-encoder,
-    trả về top_k document_id theo điểm rerank giảm dần."""
+def rerank_candidate_details(
+    reranker_model,
+    question: str,
+    candidates: List[Tuple[str, int, float]],
+    chunks: List[dict],
+    top_k: int = 5,
+) -> List[dict]:
+    """Rerank candidates and retain the representative evidence chunk for Task 2.
+
+    `chunk_index` in this return value is deliberately named `corpus_chunk_index` to avoid
+    confusion with the document-local `chunk_index` field stored inside each chunk record.
+    """
     if not candidates:
         return []
 
@@ -364,9 +375,42 @@ def rerank_candidates(
     scores = reranker_model.predict(pairs, show_progress_bar=False)
 
     reranked = sorted(
-        zip([doc_id for doc_id, _, _ in candidates], scores), key=lambda x: -x[1]
+        zip(candidates, scores), key=lambda item: -float(item[1])
     )
-    return [doc_id for doc_id, _ in reranked[:top_k]]
+    details: List[dict] = []
+    for rank, ((doc_id, corpus_chunk_index, rrf_score), reranker_score) in enumerate(
+        reranked[:top_k], start=1
+    ):
+        chunk = chunks[corpus_chunk_index]
+        details.append(
+            {
+                "doc_id": str(doc_id),
+                "corpus_chunk_index": int(corpus_chunk_index),
+                "chunk_id": (
+                    str(chunk["chunk_id"]) if chunk.get("chunk_id") is not None else None
+                ),
+                "document_chunk_index": chunk.get("chunk_index"),
+                "legal_section": chunk.get("legal_section"),
+                "document_name": chunk.get("doc_name"),
+                "passage": chunk["passage"],
+                "retrieval_rank": rank,
+                "rrf_score": float(rrf_score),
+                "reranker_score": float(reranker_score),
+            }
+        )
+    return details
+
+
+def rerank_candidates(
+    reranker_model, question: str, candidates: List[Tuple[str, int, float]], chunks: List[dict], top_k: int = 5
+) -> List[str]:
+    """Backward-compatible Task 1 wrapper returning only ranked document IDs."""
+    return [
+        item["doc_id"]
+        for item in rerank_candidate_details(
+            reranker_model, question, candidates, chunks, top_k
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +432,7 @@ def run_pipeline(
     question_batch_size: int = 64,
     query_prefix: str = "",
     collect_stages: bool = False,
+    evidence_output: Optional[Dict[str, List[dict]]] = None,
 ) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, List[str]]]]:
     """Trả về (predictions, stage_predictions).
 
@@ -438,9 +483,14 @@ def run_pipeline(
 
             rrf_score = rrf_fuse(dense_scores, bm25_scores, doc_ids, dense_top_n, bm25_top_n, rrf_k)
             candidates = aggregate_to_documents(rrf_score, doc_ids, candidate_docs)
-            top_docs = rerank_candidates(reranker_model, q["question"], candidates, chunks, top_k)
+            reranked_details = rerank_candidate_details(
+                reranker_model, q["question"], candidates, chunks, top_k
+            )
+            top_docs = [item["doc_id"] for item in reranked_details]
 
             predictions[q["question_id"]] = top_docs
+            if evidence_output is not None:
+                evidence_output[q["question_id"]] = reranked_details
 
             if collect_stages:
                 qid = q["question_id"]

@@ -2,6 +2,12 @@ import os
 import json
 import random
 
+
+def _write_jsonl(records, path):
+    with open(path, 'w', encoding='utf-8') as out_fh:
+        for record in records:
+            out_fh.write(json.dumps(record, ensure_ascii=False) + '\n')
+
 def build_train_and_val(train_filepath: str, public_filepath: str, output_dir: str, val_ratio: float = 0.2, seed: int = 42):
     """Processes train.json and public-official.json into clean jsonl files and creates train/val split."""
     os.makedirs(output_dir, exist_ok=True)
@@ -94,6 +100,50 @@ def build_train_and_val(train_filepath: str, public_filepath: str, output_dir: s
     print(f"Saved {public_clean_path}")
     
     return train_records, val_split, public_records, referenced_doc_ids
+
+
+def build_task2_questions(train_filepath: str, public_filepath: str, output_dir: str):
+    """Convert LegalQA train/public JSON objects to task-specific JSONL artifacts."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(train_filepath, 'r', encoding='utf-8') as fh:
+        train_data = json.load(fh)
+    with open(public_filepath, 'r', encoding='utf-8') as fh:
+        public_data = json.load(fh)
+
+    train_records = []
+    for question_id, item in train_data.items():
+        answer = item.get('answer')
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError(
+                f"Task 2 train question {question_id} must have a non-empty string answer"
+            )
+        train_records.append({
+            'question_id': str(question_id),
+            'question': item['question'],
+            'answer': answer,
+        })
+
+    public_records = []
+    for question_id, item in public_data.items():
+        answer = item.get('answer')
+        if answer is not None and not isinstance(answer, str):
+            raise ValueError(
+                f"Task 2 public question {question_id} answer must be null or a string"
+            )
+        public_records.append({
+            'question_id': str(question_id),
+            'question': item['question'],
+            'answer': answer,
+        })
+
+    train_path = os.path.join(output_dir, 'train_2_clean.jsonl')
+    public_path = os.path.join(output_dir, 'public_test_2.jsonl')
+    _write_jsonl(train_records, train_path)
+    _write_jsonl(public_records, public_path)
+    print(f"Saved {train_path} ({len(train_records)} records)")
+    print(f"Saved {public_path} ({len(public_records)} records)")
+    return train_records, public_records
 
 if __name__ == '__main__':
     train_path = 'data/raw/train.json'

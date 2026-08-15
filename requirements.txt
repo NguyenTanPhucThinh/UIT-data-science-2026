@@ -2,6 +2,9 @@
 rank_bm25>=0.2.2          # dùng trong BM25Retriever (src/retrieval/bm25.py)
 faiss-cpu>=1.7.4          # dùng trong FAISS vector search (src/retrieval/dense.py)
 sentence-transformers>=3.0.0  # dùng cho DenseRetriever & Reranker CrossEncoder
+# NVIDIA/Windows: install the CUDA wheel BEFORE this file, for example:
+#   python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+# A plain PyPI install may select a CPU-only wheel, which makes fine-tuning impractically slow.
 torch>=2.1.0              # PyTorch backend cho Dense embedding & CrossEncoder
 numpy>=1.26.0             # xử lý array & scores trong retrieval/fusion
 
@@ -30,12 +33,18 @@ protobuf  # (2026-08-13) BAT BUOC de convert tokenizer "slow" (sentencepiece.bpe
 # rat kho hieu: "ValueError: Error parsing line b'\x0e' in .../sentencepiece.bpe.model" (nhin giong
 # file model bi hong nhung KHONG phai - chi can cai protobuf la het loi, khong can xoa cache/tai lai).
 
+# --- src/qa + Task 2 LegalQA (local RAG generation) ---
+# Explicit because AutoModelForCausalLM/chat templates are direct production dependencies.
+transformers>=4.51.0,<5
+safetensors>=0.4.5
+nltk>=3.9  # METEOR with Vietnamese tokens; no English WordNet download is required
+pytest>=8.0  # lightweight unit tests for QA/context/metrics/validator
+
 # --- src/ingestion + EDA (Đoàn Quốc Kiên) ---
 py_vncorenlp>=0.1.4  # word segmentation - CẦN CÀI THÊM Java 8+ (JDK/JRE) riêng, py_vncorenlp không tự cài Java
 underthesea  # dùng trong legal_preprocessor.py (fallback nếu VnCoreNLP lỗi)
-pyvi  # dùng trong run_phase2.py (fast_tokenize_text() - ViTokenizer.tokenize())
+pyvi  # fallback theo từng dòng nếu VnCoreNLP lỗi trong run_phase2.py
 
 # Ghi chú: các thành viên khác nên bổ sung thêm dependency riêng của module mình vào đây
-# (vd faiss-cpu cho src/retrieval, qdrant-client cho src/vectorstore nếu dùng
-# Qdrant CHẠY LOCAL qua Docker - KHÔNG dùng Qdrant Cloud, xem cảnh báo vi phạm quy định
-# đã trao đổi trong nhóm).
+# (vd qdrant-client nếu dùng Qdrant tự host local; pipeline chính dùng FAISS local nên không
+# cần Qdrant và tuyệt đối không dùng Qdrant Cloud/API bên thứ ba).

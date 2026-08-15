@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import argparse
 from pathlib import Path
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -11,27 +12,39 @@ if hasattr(sys.stdout, 'reconfigure'):
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.config.paths import DATA_DIR
+from src.config.paths import DATA_DIR, PROCESSED_DATA_DIR
+from src.config.task_data import TASK_DATA, selected_tasks
 import corpus_builder
 import train_builder
 
-def run_audit():
-    print("=== STARTING PHASE 1: DATA AUDIT & CLEANING ===")
+def run_audit(task="all"):
+    tasks = selected_tasks(task)
+    print(f"=== STARTING PHASE 1: DATA AUDIT & CLEANING (TASKS {', '.join(tasks)}) ===")
     
     raw_ctx_dir = 'data/raw/selected-contexts'
-    train_path = 'data/raw/train.json'
-    public_path = 'data/raw/public-official.json'
-    output_dir = 'data/processed'
+    output_dir = str(PROCESSED_DATA_DIR)
     
     # 1. Build Corpus
     corpus_records, empty_docs, missing_names = corpus_builder.build_unified_corpus(
         raw_ctx_dir, os.path.join(output_dir, 'corpus.jsonl')
     )
     
-    # 2. Build Train/Val/Public
-    train_records, val_split, public_records, referenced_doc_ids = train_builder.build_train_and_val(
-        train_path, public_path, output_dir
-    )
+    # 2. Build task-specific question artifacts. The legal corpus is shared.
+    referenced_doc_ids = set()
+    if "1" in tasks:
+        task1 = TASK_DATA["1"]
+        _, _, _, referenced_doc_ids = train_builder.build_train_and_val(
+            str(task1.raw_train),
+            str(task1.raw_public),
+            output_dir,
+        )
+    if "2" in tasks:
+        task2 = TASK_DATA["2"]
+        train_builder.build_task2_questions(
+            str(task2.raw_train),
+            str(task2.raw_public),
+            output_dir,
+        )
     
     # 3. Check Q4: Are any empty docs in train.json answers?
     empty_docs_set = set(empty_docs)
@@ -39,11 +52,12 @@ def run_audit():
     
     print("\n--- AUDIT FINDINGS ---")
     print(f"Empty documents total: {len(empty_docs)}")
-    print(f"Empty documents referenced in train.json: {len(referenced_empty_docs)}")
-    if referenced_empty_docs:
-        print(f"  Referenced empty doc IDs: {referenced_empty_docs}")
-    else:
-        print("  Confirmed: None of the 20 empty documents are referenced in train.json answers!")
+    if "1" in tasks:
+        print(f"Empty documents referenced in train.json: {len(referenced_empty_docs)}")
+        if referenced_empty_docs:
+            print(f"  Referenced empty doc IDs: {referenced_empty_docs}")
+        else:
+            print("  Confirmed: no empty documents are referenced in train.json answers.")
         
     # Check doc types summary
     from collections import Counter
@@ -141,4 +155,6 @@ Inferred document types from title, URL path, and header text:
     print("=== PHASE 1 COMPLETED SUCCESSFULLY ===")
 
 if __name__ == '__main__':
-    run_audit()
+    parser = argparse.ArgumentParser(description="Build cleaned question artifacts by task")
+    parser.add_argument("--task", choices=("1", "2", "all"), default="all")
+    run_audit(parser.parse_args().task)

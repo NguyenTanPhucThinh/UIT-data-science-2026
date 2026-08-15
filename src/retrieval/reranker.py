@@ -8,7 +8,7 @@ from sentence_transformers import CrossEncoder
 from .types import DocumentCandidate, RerankResult
 
 
-DEFAULT_RERANKER_MODEL = "AITeamVN/Vietnamese_Reranker"
+DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 DEFAULT_MAX_LENGTH = 512
 DEFAULT_BATCH_SIZE = 4
 
