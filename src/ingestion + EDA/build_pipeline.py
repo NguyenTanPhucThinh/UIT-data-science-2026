@@ -74,11 +74,17 @@ def run_all():
     import run_phase1
     import run_phase2
     import run_phase4
+    import dedup_corpus
     
     # Phase 1: Audit & Corpus Unification
     with timeit("Phase 1: Audit & Corpus Unification"):
         logger.info("\n---> Running Phase 1...")
         run_phase1.run_audit()
+        
+    # Phase 1.5: Corpus Deduplication (builds dedup_mapping.json)
+    with timeit("Phase 1.5: Corpus Deduplication"):
+        logger.info("\n---> Running Deduplication...")
+        dedup_corpus.run_dedup()
         
     # Phase 2: Normalization & VnCoreNLP Segmentation
     with timeit("Phase 2: Normalization & VnCoreNLP Segmentation"):

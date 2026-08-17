@@ -16,7 +16,7 @@ class VietnameseSegmenter:
                     java_path = r"C:\Program Files\Java\jre1.8.0_491"
                     if os.path.exists(java_path):
                         os.environ["JAVA_HOME"] = java_path
-                
+
                 import py_vncorenlp
                 save_dir = os.path.abspath('models/vncorenlp')
                 self.rdrsegmenter = py_vncorenlp.VnCoreNLP(annotators=["wseg"], save_dir=save_dir)

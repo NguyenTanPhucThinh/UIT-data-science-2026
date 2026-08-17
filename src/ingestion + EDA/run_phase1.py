@@ -91,13 +91,13 @@ def run_audit():
 | **Total Context Files** | 8,532 | 100% parsed successfully |
 | **Unique Document IDs** | 8,532 | 0 duplicate IDs found |
 | **Missing `name` Field** | 1,125 (13.2%) | Inferred doc type from `link`/`passage` |
-| **Empty Passages (0 chars)** | 20 (0.2%) | **0 empty docs referenced in `train.json`** |
+| **Empty Passages (0 chars)** | 20 (0.2%) | **{len(referenced_empty_docs)} of 20 empty docs are referenced in `train.json` answers** |
 | **Has `link` Field** | 8,532 (100%) | All documents contain source link |
 
 ### 2.2 — Answer Coverage & Verification
 - **Referenced Doc IDs in `train.json`**: 3,105 unique document IDs.
 - **Corpus Coverage**: All 3,105 referenced doc IDs (100%) are present in `corpus.jsonl`.
-- **Empty Docs in Train Answers**: **0** out of the 20 empty docs appear in train answers (confirmed safe to flag/exclude during indexing).
+- **Empty Docs in Train Answers**: **{len(referenced_empty_docs)}** out of 20 empty docs appear in train answers (affecting 11 training questions — fallback URL passages generated for all 20).
 - **Public Test Overlap**: 0 question IDs overlap between train (7,000) and public test (1,000).
 
 ### 2.3 — Document Type Taxonomy
