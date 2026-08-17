@@ -6,6 +6,10 @@ from pathlib import Path
 from tqdm import tqdm
 from rank_bm25 import BM25Okapi
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 base_dir = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(base_dir))
 
