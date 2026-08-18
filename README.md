@@ -13,20 +13,29 @@ This repository contains the architecture and implementation for the UIT Data Sc
 
 ## Quickstart: Generating Processed Datasets
 
-### 📋 Prerequisites
+### Prerequisites
 - **Python 3.10+**
 - **Java (JRE/JDK 8+)**: Required by `VnCoreNLP` for Vietnamese word segmentation.
 
-### 🚀 Usage
+### Usage
 1. Place the competition zip file (e.g., `LegalIR - Public Test-*.zip`) inside `data/raw/`.
 2. Run the automated bridge script:
 
 ```bash
-python "src/ingestion + EDA/build_pipeline.py"
+# Task 1
+python "src/ingestion + EDA/build_pipeline.py" --task 1
+
+# Task 2
+python "src/ingestion + EDA/build_pipeline.py" --task 2
+
+# Task 1+2, corpus/chunks is only generated once.
+python "src/ingestion + EDA/build_pipeline.py" --task all
 ```
 
+
 This automated script will:
-1. Automatically detect and extract the master competition zip file to extract `train.json`, `public-official.json`, and `selected-contexts.zip`.
+1. Automatically detect/extract the competition data; Task 1 uses `train.json` and
+   `public-official.json`, while Task 2 uses `train-2.json` and `public-official-2.json`.
 2. Automatically extract the nested `selected-contexts.zip` into `data/raw/selected-contexts/`.
 3. Automatically download `VnCoreNLP` model binary to `models/vncorenlp/` if missing.
 4. Run Phase 1 audit & unification (`corpus.jsonl` & stratified train/val splits).
@@ -49,5 +58,11 @@ For the `Core RAG`, `Embeddings`, and `Vectorstore` team members, please consult
 1. `docs/data_handoff_guide.md` for JSON schemas, aggregation strategies, and integration guidelines.
 2. `src/utils/metrics.py` for standard metrics execution (Recall, MRR, NDCG).
 3. `src/utils/timer.py` and `logger.py` for profiling and system logs.
+
+## Task 2 — LegalQA
+
+The local end-to-end LegalQA pipeline uses `AITeamVN/Vi-Qwen2-1.5B-RAG` over token-budgeted
+retrieval evidence. See [`docs/legalqa_pipeline_implementation_guide.md`](docs/legalqa_pipeline_guide.md)
+for module contracts, setup, execution, evaluation, validation, and final submission packaging.
 
 *Maintainer for Data & Utilities: Đoàn Quốc Kiên (Thành viên 1)*

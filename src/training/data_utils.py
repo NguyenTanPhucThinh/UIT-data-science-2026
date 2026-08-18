@@ -1,7 +1,10 @@
 """
 Tiện ích load dữ liệu dùng chung cho training/evaluation Task 1 - LegalIR.
 
-Đọc trực tiếp từ selected-contexts.zip (không cần giải nén 8.532 file JSON ra đĩa) và train.json.
+Đọc trực tiếp từ selected-contexts.zip HOẶC từ thư mục đã giải nén (8.532 file context_<id>.json
+rời) và train.json. Chấp nhận cả 2 dạng vì `build_pipeline.py` (Đoàn Quốc Kiên) tự giải nén zip ra
+`data/raw/selected-contexts/` và KHÔNG giữ lại file .zip gốc - máy nào đã chạy build_pipeline.py
+một lần thì --corpus phải trỏ vào thư mục, không phải .zip nữa.
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ import logging
 import re
 import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterator, List
 
 logger = logging.getLogger(__name__)
@@ -24,21 +28,47 @@ class Document:
 
 
 class CorpusReader:
-    """Đọc lười (lazy) từng văn bản từ selected-contexts.zip.
+    """Đọc lười (lazy) từng văn bản từ selected-contexts.zip HOẶC thư mục đã giải nén.
 
     Tránh load hết ~97MB / 8.532 văn bản vào RAM cùng lúc - chỉ đọc văn bản nào thực sự cần.
+
+    `corpus_path` có thể là:
+      - đường dẫn tới file .zip (selected-contexts.zip), hoặc
+      - đường dẫn tới THƯ MỤC chứa các file context_<id>.json rời (vd data/raw/selected-contexts/,
+        sau khi build_pipeline.py đã giải nén).
+    Tự động nhận diện dựa trên `Path(corpus_path).is_dir()`.
     """
 
     _PATTERN = re.compile(r"context_(\d+)\.json$")
 
-    def __init__(self, zip_path: str):
-        self.zip_path = zip_path
-        self._zip = zipfile.ZipFile(zip_path)
+    def __init__(self, corpus_path: str):
+        self.corpus_path = corpus_path
+        self._is_dir = Path(corpus_path).is_dir()
         self._name_by_id: Dict[str, str] = {}
-        for name in self._zip.namelist():
-            m = self._PATTERN.search(name)
-            if m:
-                self._name_by_id[m.group(1)] = name
+
+        if self._is_dir:
+            self._zip = None
+            for entry in Path(corpus_path).iterdir():
+                m = self._PATTERN.search(entry.name)
+                if m:
+                    self._name_by_id[m.group(1)] = str(entry)
+            if not self._name_by_id:
+                raise FileNotFoundError(
+                    f"Không tìm thấy file context_<id>.json nào trong thư mục: {corpus_path}"
+                )
+        else:
+            if not Path(corpus_path).exists():
+                raise FileNotFoundError(
+                    f"Không tìm thấy corpus tại: {corpus_path} - đường dẫn này không phải file .zip "
+                    "cũng không phải thư mục tồn tại. Nếu bạn đã chạy build_pipeline.py, file .zip "
+                    "gốc có thể đã bị giải nén và xóa - trỏ --corpus vào thư mục "
+                    "data/raw/selected-contexts/ thay vì selected-contexts.zip."
+                )
+            self._zip = zipfile.ZipFile(corpus_path)
+            for name in self._zip.namelist():
+                m = self._PATTERN.search(name)
+                if m:
+                    self._name_by_id[m.group(1)] = name
 
     def __len__(self) -> int:
         return len(self._name_by_id)
@@ -50,7 +80,10 @@ class CorpusReader:
         name = self._name_by_id.get(str(doc_id))
         if name is None:
             raise KeyError(f"document_id không tồn tại trong corpus: {doc_id}")
-        raw = json.loads(self._zip.read(name))
+        if self._is_dir:
+            raw = json.loads(Path(name).read_text(encoding="utf-8"))
+        else:
+            raw = json.loads(self._zip.read(name))
         return Document(
             id=str(raw.get("id", doc_id)),
             name=raw.get("name", ""),
@@ -136,8 +169,7 @@ def resolve_device(requested: str = "auto") -> str:
             'python -c "import torch; print(torch.cuda.is_available())" '
             "- nếu ra False dù có GPU, khả năng cao bản torch đang cài KHÔNG có CUDA. Kiểm tra "
             "bản CUDA của driver bằng lệnh `nvidia-smi`, rồi cài lại torch đúng bản tương ứng "
-            "theo hướng dẫn tại https://pytorch.org/get-started/locally/ "
-            "(vd: pip install torch --index-url https://download.pytorch.org/whl/cu121)."
+            "theo hướng dẫn tại https://pytorch.org/get-started/locally/."
         )
     else:
         try:

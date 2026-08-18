@@ -26,6 +26,15 @@ Sau đó chấm điểm:
 chạy, embedding của corpus được lưu cache ra đĩa (.npz) - lần chạy sau (vd sau khi fine-tune
 xong, muốn so sánh model mới) chỉ cần đổi `--model` VÀ đổi luôn `--embedding-cache` sang path
 khác (mỗi model một cache riêng, vì embedding của model khác nhau thì khác nhau hoàn toàn).
+
+QUAN TRỌNG - prefix "query: "/"passage: ": bqbbao6/VN_legal_embedding_512 fine-tune từ
+intfloat/multilingual-e5-base (đã xác nhận qua model card HuggingFace) - là bi-encoder BẤT ĐỐI
+XỨNG kiểu E5, BẮT BUỘC thêm "query: " trước câu hỏi và "passage: " trước văn bản corpus trước
+khi encode, nếu không sẽ ra similarity gần như ngẫu nhiên. Mặc định script này đã tự thêm 2
+prefix trên (đổi qua --query-prefix/--passage-prefix nếu dùng model khác không cần prefix -
+truyền chuỗi rỗng "" để tắt). Nếu bạn có --embedding-cache sinh ra TRƯỚC khi có prefix (tên
+file cũ), XÓA cache đó và chạy lại - cache cũ không có prefix sẽ cho điểm Recall SAI/thấp hơn
+thực tế.
 """
 from __future__ import annotations
 
@@ -46,13 +55,19 @@ except ImportError:  # cho phép chạy trực tiếp: python src/evaluation/bas
     from src.training.data_utils import CorpusReader, chunk_passage, resolve_device
 
 
-def build_corpus_chunks(corpus: CorpusReader, max_chars: int = 2000) -> Tuple[List[str], List[str]]:
-    """Chunk toàn bộ corpus, trả về (danh sách text từng chunk, danh sách doc_id tương ứng)."""
+def build_corpus_chunks(
+    corpus: CorpusReader, max_chars: int = 2000, passage_prefix: str = ""
+) -> Tuple[List[str], List[str]]:
+    """Chunk toàn bộ corpus, trả về (danh sách text từng chunk, danh sách doc_id tương ứng).
+
+    `passage_prefix` (vd "passage: " cho model E5-style) được thêm vào TRƯỚC khi encode, KHÔNG
+    ảnh hưởng tới doc_id/việc chunk văn bản.
+    """
     texts: List[str] = []
     doc_ids: List[str] = []
     for doc in corpus.iter_documents():
         for chunk in chunk_passage(doc.passage, max_chars=max_chars):
-            texts.append(chunk)
+            texts.append(passage_prefix + chunk)
             doc_ids.append(doc.id)
     return texts, doc_ids
 
@@ -71,9 +86,15 @@ def encode_corpus(model, texts: List[str], batch_size: int = 64):
     return emb.astype(np.float32)
 
 
-def load_or_build_corpus_embeddings(model, corpus: CorpusReader, cache_path: str, max_chars: int, batch_size: int):
+def load_or_build_corpus_embeddings(
+    model, corpus: CorpusReader, cache_path: str, max_chars: int, batch_size: int, passage_prefix: str = ""
+):
     """Load embedding corpus từ cache nếu có (và khớp số lượng văn bản), nếu không thì encode
     lại từ đầu rồi lưu cache. Cache gồm: embeddings (float32 [n_chunks, dim]) + doc_ids song song.
+
+    LƯU Ý: cache KHÔNG lưu lại prefix đã dùng - nếu đổi --passage-prefix (vd bật/tắt "passage: ")
+    giữa các lần chạy mà dùng lại cùng 1 file cache, kết quả sẽ SAI vì cache vẫn là embedding cũ.
+    Xóa cache thủ công khi đổi prefix.
     """
     import numpy as np
 
@@ -86,7 +107,7 @@ def load_or_build_corpus_embeddings(model, corpus: CorpusReader, cache_path: str
         logger.info("Đã load %d chunk từ cache (bỏ qua bước encode)", len(doc_ids))
         return embeddings, doc_ids
 
-    texts, doc_ids = build_corpus_chunks(corpus, max_chars=max_chars)
+    texts, doc_ids = build_corpus_chunks(corpus, max_chars=max_chars, passage_prefix=passage_prefix)
     embeddings = encode_corpus(model, texts, batch_size=batch_size)
 
     cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -155,6 +176,14 @@ def main() -> None:
     parser.add_argument("--embedding-cache", default=None, help="Nếu chỉ định, cache embedding corpus ra file .npz để tái sử dụng giữa các lần chạy")
     parser.add_argument("--limit-questions", type=int, default=None, help="Chỉ chạy N câu hỏi đầu (debug nhanh)")
     parser.add_argument("--device", default="auto", help="'auto' (mặc định, ưu tiên GPU nếu có), 'cuda', hoặc 'cpu'")
+    parser.add_argument(
+        "--query-prefix", default="query: ",
+        help='Prefix thêm trước câu hỏi trước khi encode (E5-style, mặc định "query: "). Truyền "" để tắt nếu dùng model không cần prefix.',
+    )
+    parser.add_argument(
+        "--passage-prefix", default="passage: ",
+        help='Prefix thêm trước mỗi chunk corpus trước khi encode (E5-style, mặc định "passage: "). Truyền "" để tắt.',
+    )
     args = parser.parse_args()
 
     try:
@@ -170,12 +199,18 @@ def main() -> None:
     corpus = CorpusReader(args.corpus)
     logger.info("Corpus: %d văn bản", len(corpus))
 
+    if args.query_prefix or args.passage_prefix:
+        logger.info(
+            'Dùng prefix E5-style: query_prefix=%r, passage_prefix=%r (đổi bằng --query-prefix/--passage-prefix nếu model khác không cần)',
+            args.query_prefix, args.passage_prefix,
+        )
+
     if args.embedding_cache:
         corpus_embeddings, corpus_doc_ids = load_or_build_corpus_embeddings(
-            model, corpus, args.embedding_cache, args.max_chars, args.batch_size
+            model, corpus, args.embedding_cache, args.max_chars, args.batch_size, passage_prefix=args.passage_prefix
         )
     else:
-        texts, corpus_doc_ids = build_corpus_chunks(corpus, max_chars=args.max_chars)
+        texts, corpus_doc_ids = build_corpus_chunks(corpus, max_chars=args.max_chars, passage_prefix=args.passage_prefix)
         corpus_embeddings = encode_corpus(model, texts, batch_size=args.batch_size)
 
     with open(args.questions, encoding="utf-8") as f:
@@ -183,7 +218,7 @@ def main() -> None:
     qids = list(raw_questions.keys())
     if args.limit_questions:
         qids = qids[: args.limit_questions]
-    question_texts = [raw_questions[qid]["question"] for qid in qids]
+    question_texts = [args.query_prefix + raw_questions[qid]["question"] for qid in qids]
 
     logger.info("Encoding %d câu hỏi...", len(question_texts))
     question_embeddings = model.encode(
