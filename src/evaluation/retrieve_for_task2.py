@@ -12,10 +12,10 @@ Khác với full_pipeline_eval.py (chỉ xuất document_id, đúng định dạ
 xuất chunk bằng chứng thực sự được reranker chọn, kèm provenance và score. Không nạp toàn văn
 document vì văn bản pháp luật có thể rất dài và làm tràn context window của LLM Task 2.
 
-Mặc định dùng model TỐT NHẤT hiện có (models/vietnamese-legal-embedding-ft-full +
-models/reranker-ft-full - ĐÚNG cấu hình đã dùng tạo submission_v2.zip, Score PUBLIC 0.8387) - đổi
-bằng --embedding-model/--reranker-model nếu muốn thử cấu hình khác (vd sau khi có cấu hình tốt hơn
-từ các thử nghiệm đang làm ở Task 1).
+Mặc định dùng model TỐT NHẤT hiện có (models/public_train/vietnamese-legal-embedding-ft-full +
+models/public_train/reranker-ft-full - ĐÚNG cấu hình đã dùng tạo submission_v2.zip, Score PUBLIC
+0.8387) - đổi bằng --embedding-model/--reranker-model nếu muốn thử cấu hình khác (vd sau khi có
+cấu hình tốt hơn từ các thử nghiệm đang làm ở Task 1).
 
 LƯU Ý QUAN TRỌNG cho người dùng ở Task 2: --top-k mặc định ở đây là 5 (giống Task 1), nhưng Task 2
 KHÔNG bị giới hạn "tối đa 5 document" như Task 1 (đó là ràng buộc riêng của ĐỊNH DẠNG NỘP BÀI Task 1,
@@ -62,10 +62,35 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--embedding-model", default="models/vietnamese-legal-embedding-ft-full",
-                         help="Mặc định = model TỐT NHẤT hiện có (dùng cho submission_v2.zip)")
-    parser.add_argument("--reranker-model", default="models/reranker-ft-full",
-                         help="Mặc định = model TỐT NHẤT hiện có (dùng cho submission_v2.zip)")
+    parser.add_argument("--embedding-model", default="models/public_train/vietnamese-legal-embedding-ft-full",
+                         help="Mặc định = model TỐT NHẤT hiện có (dùng cho submission_v2.zip). "
+                              "LƯU Ý: nằm trong models/public_train/, KHÔNG phải thẳng models/ - "
+                              "sai đường dẫn sẽ khiến sentence-transformers tưởng đây là tên repo "
+                              "trên HuggingFace Hub và báo lỗi 401/RepositoryNotFoundError.")
+    parser.add_argument("--reranker-model", default="models/public_train/reranker-ft-full",
+                         help="Mặc định = model TỐT NHẤT hiện có (dùng cho submission_v2.zip). "
+                              "LƯU Ý: nằm trong models/public_train/, KHÔNG phải thẳng models/. "
+                              "Truyền rỗng (--reranker-model \"\") hoặc \"none\" để BỎ QUA reranker - "
+                              "khi đó output = thẳng top-k của hybrid_fused (RRF dense+BM25), giống "
+                              "cấu hình no-rerank hiện đang dùng cho Task 1 (xem claude/submission-log-task1.md) "
+                              "- hữu ích khi đang thử nhiều embedding model khác nhau và chưa muốn tốn "
+                              "thời gian/VRAM load reranker cho từng lần thử.")
+    parser.add_argument("--bm25-weight", type=float, default=1.0,
+                         help="Trọng số nhánh BM25 trong RRF fusion (score = 1/(rrf_k+rank_dense) + "
+                              "bm25_weight/(rrf_k+rank_bm25)). Mặc định 1.0 (không đổi hành vi cũ). "
+                              "Kết quả sweep trên Task 1 cho thấy 0.4 là tối ưu cục bộ hiện tại (xem "
+                              "claude/submission-log-task1.md) - cân nhắc dùng --bm25-weight 0.4.")
+    parser.add_argument("--query-prompt-name", default=None,
+                         help="Tên prompt đóng gói sẵn trong model để encode QUERY (cơ chế prompt_name "
+                              "của sentence-transformers) - dùng cho model không theo quy ước prefix thủ "
+                              "công kiểu E5 (vd Qwen3-Embedding). Nếu đặt, BỎ QUA --query-prefix. Kiểm tra "
+                              "model.prompts trước khi dùng nếu không chắc tên hợp lệ.")
+    parser.add_argument("--passage-prompt-name", default=None,
+                         help="Tương tự --query-prompt-name nhưng cho PASSAGE (corpus chunks) khi encode_chunks.")
+    parser.add_argument("--max-seq-length", type=int, default=None,
+                         help="Ghi đè embedding_model.max_seq_length sau khi load (vd 2048 cho "
+                              "AITeamVN/Vietnamese_Embedding theo khuyến nghị model card) - cần thiết vì "
+                              "chunk văn bản pháp luật có thể dài.")
     parser.add_argument("--chunks", default="data/processed/chunks_corpus.jsonl")
     parser.add_argument("--questions", required=True, help="File câu hỏi Task 2 (BTC cấp) - hỗ trợ cùng 2 định dạng như full_pipeline_eval.py")
     parser.add_argument("--output", required=True)
@@ -116,11 +141,23 @@ def main() -> None:
             logger.info("Đã cast embedding model sang fp16 (dùng --no-fp16-inference để tắt).")
         except Exception as e:  # noqa: BLE001
             logger.warning("Không cast được model sang fp16 (%s) - encode ở fp32.", e)
-    logger.info("Load reranker model: %s", args.reranker_model)
-    reranker_model = CrossEncoder(args.reranker_model, num_labels=1, device=device)
+    if args.max_seq_length is not None:
+        embedding_model.max_seq_length = args.max_seq_length
+        logger.info("Đã ghi đè embedding_model.max_seq_length = %d", args.max_seq_length)
+
+    reranker_model = None
+    if args.reranker_model and args.reranker_model.strip().lower() not in ("", "none"):
+        logger.info("Load reranker model: %s", args.reranker_model)
+        reranker_model = CrossEncoder(args.reranker_model, num_labels=1, device=device)
+    else:
+        logger.info(
+            "KHÔNG dùng reranker (--reranker-model rỗng/'none') - output sẽ là thẳng top-k của "
+            "hybrid_fused (RRF dense+BM25), không qua rerank."
+        )
 
     chunk_embeddings = encode_chunks(
-        embedding_model, chunks, args.batch_size, args.embedding_cache, passage_prefix=args.passage_prefix
+        embedding_model, chunks, args.batch_size, args.embedding_cache,
+        passage_prefix=args.passage_prefix, passage_prompt_name=args.passage_prompt_name,
     )
     bm25_index = build_bm25_index(chunks)
 
@@ -129,7 +166,8 @@ def main() -> None:
         embedding_model, reranker_model, chunks, chunk_embeddings, bm25_index, questions,
         top_k=args.top_k, dense_top_n=args.dense_top_n, bm25_top_n=args.bm25_top_n, rrf_k=args.rrf_k,
         candidate_docs=args.candidate_docs, question_batch_size=args.question_batch_size,
-        query_prefix=args.query_prefix, collect_stages=False, evidence_output=evidence_by_qid,
+        query_prefix=args.query_prefix, collect_stages=False,
+        bm25_weight=args.bm25_weight, query_prompt_name=args.query_prompt_name,
     )
 
     question_text_by_id = {q["question_id"]: q["question"] for q in questions}

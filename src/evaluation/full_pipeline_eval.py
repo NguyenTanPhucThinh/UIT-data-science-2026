@@ -56,12 +56,51 @@ cạnh kết quả cuối, rồi dùng src/evaluation/stage_report.py để ch�
 và xem chênh lệch Recall giữa các giai đoạn liên tiếp - vd nếu dense-only và hybrid_fused gần
 bằng nhau nhưng final thấp hơn hẳn, nghĩa là RERANKER đang làm giảm chất lượng chứ không phải
 retrieval yếu.
+
+TRỌNG SỐ BM25 TRONG RRF (--bm25-weight, thêm 2026-08-14): mặc định RRF cộng CÙNG trọng số 1.0
+cho cả 2 nhánh (score += 1/(rrf_k+rank_dense) + 1/(rrf_k+rank_bm25)). --bm25-weight > 1.0 tăng
+ảnh hưởng của BM25 tương đối so với dense (score += 1/(rrf_k+rank_dense) + bm25_weight *
+1/(rrf_k+rank_bm25)) - động lực: phân tích lỗi recall=0 (outputs/predictions/error_analysis_recall0.md,
+mục "Pattern A") cho thấy nhiều case bị nhầm giữa các văn bản CÙNG KHUÔN MẪU chỉ khác tên riêng/số
+hiệu (vd Điều lệ Kiểm soát viên các Tổng công ty khác nhau, chuỗi tiêu chuẩn TCVN cùng series) - đây
+là kiểu lỗi PHÂN BIỆT THỰC THỂ mà BM25 (khớp từ khóa chính xác) về lý thuyết xử lý tốt hơn dense
+embedding (khớp ngữ nghĩa). --bm25-weight=1.0 (mặc định) giữ NGUYÊN hành vi cũ, không đổi kết quả
+so với trước khi thêm tùy chọn này. Dùng src/evaluation/sweep_bm25_weight.py để dò nhiều giá trị
+--bm25-weight CÙNG LÚC trên val_split_20 (chỉ encode/build BM25 index 1 LẦN DUY NHẤT, rất rẻ để
+thử nhiều giá trị) thay vì đoán mò 1 con số rồi chạy lại full_pipeline_eval.py nhiều lần. Kết quả
+sweep thực tế (2026-08-14): đỉnh Recall ở weight=0.4 (+0.0109 so với 1.0), xem
+claude/submission-log-task1.md để biết số liệu đầy đủ - đã áp dụng làm mặc định thực tế khi tạo
+submission (KHÔNG đổi default của --bm25-weight ở đây để tránh phá vỡ khả năng tái lập các lần
+chạy CŨ đã ghi trong log - luôn truyền tường minh --bm25-weight 0.4 khi tạo submission mới).
+
+RERANKER TÙY CHỌN + PROMPT/MAX-SEQ-LENGTH CHO EMBEDDING KHÁC E5 (thêm 2026-08-14, phục vụ so sánh
+nhiều embedding model pretrained trước khi quyết định fine-tune cái nào - xem
+claude/submission-log-task1.md mục so sánh embedding):
+  - --reranker-model giờ TÙY CHỌN (bỏ trống = không tải/dùng reranker, kết quả cuối = top-k của
+    hybrid_fused thẳng) - đỡ tốn thời gian/VRAM khi chỉ cần so sánh nhánh dense/hybrid, không cần
+    số liệu rerank.
+  - Không phải embedding model nào cũng dùng quy ước prefix kiểu E5 ("query: "/"passage: ") -
+    model kiểu Qwen3-Embedding đóng gói sẵn "prompt" theo tên (vd "query") trong config thay vì
+    cần tự nối chuỗi. Dùng --query-prompt-name/--passage-prompt-name để dùng đúng cơ chế đó thay
+    vì --query-prefix/--passage-prefix (2 cặp tùy chọn LOẠI TRỪ NHAU - prompt_name được ưu tiên
+    nếu có cả 2). Model KHÔNG cần prefix/prompt gì cả (vd AITeamVN/Vietnamese_Embedding, symmetric,
+    fine-tune từ BAAI/bge-m3) thì để cả --query-prefix/--passage-prefix RỖNG ("").
+  - --max-seq-length ghi đè độ dài tối đa model xử lý (vd AITeamVN/Vietnamese_Embedding khuyến
+    nghị 2048 theo model card, cao hơn default nhiều model khác - chunk pháp lý dài dễ bị cắt mất
+    nếu bỏ qua tùy chọn này).
+  - ⚠️ LUÔN kiểm tra kỹ quy ước prefix/prompt CHÍNH XÁC của model mới trên model card HuggingFace
+    trước khi tin kết quả - dùng sai/thiếu prefix từng gây bug nghiêm trọng (similarity gần như
+    ngẫu nhiên, xem mục "Bug đã sửa 2026-08-12" trong claude/submission-log-task1.md). Nếu model
+    card bị GATED (yêu cầu đăng nhập/chấp nhận điều khoản trên HuggingFace) và không xác nhận được
+    quy ước prefix/prompt, ưu tiên tự kiểm tra `model.prompts` (nếu dùng cơ chế prompt) hoặc đọc
+    trực tiếp `config_sentence_transformers.json` sau khi tải model về, KHÔNG đoán mò.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 from collections import defaultdict
@@ -190,10 +229,18 @@ def load_questions(questions_path: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 def encode_chunks(
-    model, chunks: List[dict], batch_size: int, cache_path: Optional[str] = None, passage_prefix: str = ""
+    model, chunks: List[dict], batch_size: int, cache_path: Optional[str] = None, passage_prefix: str = "",
+    passage_prompt_name: Optional[str] = None,
 ):
-    """LƯU Ý: nếu đổi `passage_prefix` giữa các lần chạy, XÓA cache_path cũ trước - cache không
-    lưu lại prefix đã dùng, dùng nhầm cache cũ (không prefix) sẽ cho điểm SAI."""
+    """LƯU Ý: nếu đổi `passage_prefix`/`passage_prompt_name` giữa các lần chạy, XÓA cache_path cũ
+    trước - cache không lưu lại prefix/prompt đã dùng, dùng nhầm cache cũ sẽ cho điểm SAI.
+
+    `passage_prompt_name` (thêm 2026-08-14, cho model kiểu Qwen3-Embedding đóng gói sẵn prompt
+    template trong config thay vì cần tự nối chuỗi prefix thủ công): nếu truyền, dùng CƠ CHẾ
+    PROMPT CHÍNH THỨC của sentence-transformers (`model.encode(..., prompt_name=...)`) THAY VÌ
+    `passage_prefix` (bỏ qua `passage_prefix` nếu cả 2 cùng truyền - tránh áp dụng 2 lần). Model
+    phải có sẵn `model.prompts` chứa đúng tên này (kiểm tra bằng `print(model.prompts)` sau khi
+    load nếu không chắc) - nếu không tồn tại, sentence-transformers sẽ báo lỗi rõ ràng."""
     import numpy as np
 
     if cache_path:
@@ -209,12 +256,15 @@ def encode_chunks(
                 len(data["doc_ids"]), len(chunks),
             )
 
-    texts = [passage_prefix + c["passage"] for c in chunks]
-    logger.info("Encoding %d chunk (dense, passage_prefix=%r)...", len(texts), passage_prefix)
-    emb = model.encode(
-        texts, batch_size=batch_size, show_progress_bar=True,
-        convert_to_numpy=True, normalize_embeddings=True,
-    ).astype(np.float32)
+    encode_kwargs = dict(batch_size=batch_size, show_progress_bar=True, convert_to_numpy=True, normalize_embeddings=True)
+    if passage_prompt_name:
+        texts = [c["passage"] for c in chunks]
+        logger.info("Encoding %d chunk (dense, passage_prompt_name=%r)...", len(texts), passage_prompt_name)
+        encode_kwargs["prompt_name"] = passage_prompt_name
+    else:
+        texts = [passage_prefix + c["passage"] for c in chunks]
+        logger.info("Encoding %d chunk (dense, passage_prefix=%r)...", len(texts), passage_prefix)
+    emb = model.encode(texts, **encode_kwargs).astype(np.float32)
 
     if cache_path:
         cache_file = Path(cache_path)
@@ -247,6 +297,152 @@ def build_bm25_index(chunks: List[dict]):
 
 
 # ---------------------------------------------------------------------------
+# Song song hoá BM25 (thêm 2026-08-17): bm25_index.get_scores(q_tokens) của thư viện rank_bm25
+# CHẠY THUẦN PYTHON, ĐƠN LUỒNG, và là bước CHIẾM PHẦN LỚN thời gian mỗi câu hỏi trong vòng lặp
+# chính (đã đo thực tế: ~1.8s/câu, ~30 phút cho 1000 câu public test) - trong khi nhánh dense
+# (embedding) đã batch + chạy trên GPU nên rất nhanh, không phải nút thắt. Vì get_scores() của
+# MỖI câu hỏi là 1 phép tính ĐỘC LẬP hoàn toàn (chỉ đọc bm25_index, không có state chung giữa các
+# câu hỏi), có thể chạy song song qua nhiều tiến trình CPU (ProcessPoolExecutor) mà KHÔNG làm thay
+# đổi bất kỳ con số Recall/Precision nào - vẫn CHÍNH XÁC cùng 1 hàm get_scores() của rank_bm25,
+# chỉ phân phối các lệnh gọi độc lập đó ra nhiều nhân CPU thay vì chạy tuần tự trên 1 nhân.
+#
+# Dùng ProcessPoolExecutor (không phải threading) vì đây là CPU-bound thuần Python - threading sẽ
+# bị GIL chặn, không tăng tốc được. initializer chỉ pickle/truyền bm25_index MỘT LẦN cho mỗi tiến
+# trình con khi khởi tạo pool (không phải mỗi câu hỏi) - chi phí cố định, không lặp lại.
+#
+# ⚠️ RỦI RO THẬT ĐÃ GẶP (2026-08-17, KHÔNG chỉ là lý thuyết): trên Windows, multiprocessing dùng
+# 'spawn' (KHÔNG share bộ nhớ copy-on-write như 'fork' trên Linux) - mỗi tiến trình con phải nhận
+# 1 BẢN SAO ĐẦY ĐỦ, pickle riêng, của toàn bộ bm25_index (danh sách ~351K dict term->tần suất).
+# Với --bm25-workers=16, đã xảy ra MemoryError THẬT khi spawn (pickle nhiều bản cùng lúc vượt RAM
+# máy) - KHÔNG khuyến nghị dùng cách này cho corpus lớn nữa, dùng --bm25-fast bên dưới thay thế
+# (nhanh hơn NHIỀU và không nhân bản bộ nhớ qua tiến trình). Giữ lại code này (mặc định vẫn tắt,
+# bm25_workers=1) chỉ để tham khảo/dùng thử với worker count RẤT NHỎ (2-3) nếu máy nhiều RAM.
+_worker_bm25_index = None  # global riêng của MỖI tiến trình con, set 1 lần bởi _bm25_pool_init
+
+
+def _bm25_pool_init(bm25_index) -> None:
+    global _worker_bm25_index
+    _worker_bm25_index = bm25_index
+
+
+def _bm25_score_one(q_tokens: List[str]):
+    import numpy as np
+
+    return np.asarray(_worker_bm25_index.get_scores(q_tokens))
+
+
+# ---------------------------------------------------------------------------
+# BM25 VECTOR HOÁ bằng ma trận thưa (thêm 2026-08-17, THAY THẾ --bm25-workers ở trên): thay vì
+# chạy get_scores() lặp lại (tuần tự HOẶC qua nhiều tiến trình, cả 2 đều đã đo là chậm/hoặc gây
+# MemoryError), TIỀN TÍNH 1 LẦN DUY NHẤT 1 ma trận thưa (n_docs x n_vocab) chứa sẵn phần
+# "tf*(k1+1)/(tf+K[doc])" của công thức BM25 cho MỌI cặp (document, từ) - phần NÀY không phụ thuộc
+# câu hỏi nên chỉ cần tính 1 lần. Sau đó, điểm BM25 của CẢ MỘT BATCH câu hỏi = 1 phép NHÂN MA TRẬN
+# THƯA duy nhất (ma trận đã tiền tính) x (ma trận trọng số idf của từng câu hỏi trong batch) - cực
+# nhanh (C-level, scipy.sparse), và CHỈ 1 bản trong bộ nhớ (không nhân bản qua tiến trình như
+# --bm25-workers) nên KHÔNG có rủi ro MemoryError kiểu đã gặp.
+#
+# ĐỘ CHÍNH XÁC: dùng LẠI (không tính lại) đúng bm25_index.idf/doc_freqs/doc_len/avgdl/k1/b đã được
+# chính rank_bm25.BM25Okapi tính sẵn (kể cả phần xử lý idf âm bằng epsilon) - công thức Y HỆT
+# get_scores() gốc, chỉ đổi CÁCH tính (vector hoá thay vì vòng lặp Python). Có thể lệch CỰC NHỎ ở
+# các chữ số thập phân xa (thứ tự cộng dấu phẩy động khác nhau giữa tổng tuần tự và nhân ma trận),
+# KHÔNG đủ để đổi thứ hạng/Recall/Precision trong thực tế - nhưng BẮT BUỘC tự verify bằng cách so
+# Recall trên val_split_20 TRƯỚC khi tin dùng cho submission thật (xem hướng dẫn ở --bm25-fast).
+def build_bm25_fast_matrix(bm25_index):
+    import itertools
+
+    import numpy as np
+    import scipy.sparse as sp
+    try:
+        import pandas as pd
+    except ImportError as e:  # noqa: BLE001
+        raise ImportError(
+            "--bm25-fast cần thêm pandas (chỉ dùng để map từ vựng -> chỉ số cột NHANH hơn nhiều "
+            "so với vòng lặp Python thuần trên corpus lớn - đã đo thực tế: >120s/không xong với "
+            "vòng lặp thuần, ~7s với pandas.Index.get_indexer() ở quy mô 200K document/50 triệu "
+            "phần tử). Chạy: pip install pandas"
+        ) from e
+
+    vocab_index = {term: i for i, term in enumerate(bm25_index.idf.keys())}
+    idf = np.asarray([bm25_index.idf[t] for t in vocab_index], dtype=np.float32)
+
+    n_docs = len(bm25_index.doc_freqs)
+    doc_len = np.asarray(bm25_index.doc_len, dtype=np.float64)
+    avgdl = bm25_index.avgdl
+    k1 = bm25_index.k1
+    b = bm25_index.b
+    # Phần mẫu số CHỈ phụ thuộc document (không phụ thuộc từ/câu hỏi) - đúng công thức BM25Okapi.
+    K = (k1 * (1.0 - b + b * doc_len / avgdl)).astype(np.float32)
+
+    doc_freqs = bm25_index.doc_freqs
+    nnz = sum(len(freqs) for freqs in doc_freqs)
+    # Ước tính RAM ĐỈNH cho bước xây ma trận (KHÁC hẳn rủi ro MemoryError của --bm25-workers - đó
+    # là nhân bản N LẦN qua N tiến trình, còn đây CHỈ 1 bản duy nhất trong tiến trình chính, nhưng
+    # vẫn đáng kể với corpus lớn - đã đo thực tế ~1.6GB đỉnh cho ~12 triệu phần tử/50K document khi
+    # viết bản này, TỈ LỆ THUẬN với nnz). In ra TRƯỚC khi làm bước nặng để có thể Ctrl+C dừng sớm
+    # nếu ước tính vượt quá RAM còn trống của máy (xem Task Manager).
+    est_gb = nnz * 1.6 / 12_435_045  # ngoại suy tuyến tính từ mốc đã đo thực tế (xem docstring)
+    logger.info(
+        "Xây ma trận thưa BM25: %d document x %d từ vựng, %d phần tử khác-0 - ƯỚC TÍNH RAM ĐỈNH "
+        "~%.1f GB cho bước này (nếu máy còn ít RAM trống hơn số này, Ctrl+C dừng lại, dùng "
+        "--bm25-workers với số nhỏ (vd 4) thay vì --bm25-fast)...",
+        n_docs, len(vocab_index), nnz, est_gb,
+    )
+
+    # Flatten (doc_idx, term, tf) bằng thao tác VECTOR HOÁ/bulk thay vì vòng lặp lồng nhau gọi
+    # array[i]=x từng phần tử (đã đo: vòng lặp thuần mất >120s/không xong ở quy mô 50 triệu phần
+    # tử - itertools.chain + np.fromiter + pandas.Index.get_indexer chỉ mất ~7s ở CÙNG quy mô).
+    doc_lens = np.fromiter((len(f) for f in doc_freqs), dtype=np.int64, count=n_docs)
+    rows = np.repeat(np.arange(n_docs, dtype=np.int32), doc_lens)
+    terms_flat = list(itertools.chain.from_iterable(f.keys() for f in doc_freqs))
+    data = np.fromiter(itertools.chain.from_iterable(f.values() for f in doc_freqs), dtype=np.float32, count=nnz)
+    cols = pd.Index(list(vocab_index.keys())).get_indexer(terms_flat).astype(np.int32)
+    del terms_flat  # giải phóng sớm - list Python 50 triệu chuỗi có thể chiếm vài trăm MB-vài GB
+
+    if (cols < 0).any():
+        raise RuntimeError(
+            "Có từ trong doc_freqs KHÔNG map được vào vocab_index - không nên xảy ra (vocab lấy "
+            "trực tiếp từ chính doc_freqs). Báo lại lỗi này kèm log đầy đủ nếu gặp phải."
+        )
+
+    tf_matrix = sp.csr_matrix((data, (rows, cols)), shape=(n_docs, len(vocab_index)), dtype=np.float32)
+    row_idx_per_nnz = np.repeat(np.arange(n_docs, dtype=np.int32), np.diff(tf_matrix.indptr))
+    transformed = tf_matrix.data * (k1 + 1.0) / (tf_matrix.data + K[row_idx_per_nnz])
+    bm25_term_matrix = sp.csr_matrix((transformed, tf_matrix.indices, tf_matrix.indptr), shape=tf_matrix.shape)
+    logger.info("Đã xây xong ma trận thưa BM25 (dùng cho --bm25-fast).")
+    return {"matrix": bm25_term_matrix, "vocab_index": vocab_index, "idf": idf}
+
+
+def bm25_scores_batch_fast(bm25_fast: dict, q_tokens_batch: List[List[str]]):
+    """Trả về mảng (n_questions, n_docs) - HÀNG i = điểm BM25 câu hỏi thứ i cho TOÀN BỘ chunk,
+    tương đương gọi get_scores() riêng cho từng câu hỏi nhưng tính CẢ BATCH bằng 1 phép nhân ma
+    trận thưa duy nhất."""
+    import numpy as np
+    import scipy.sparse as sp
+
+    vocab_index = bm25_fast["vocab_index"]
+    idf = bm25_fast["idf"]
+
+    rows, cols, data = [], [], []
+    for qi, tokens in enumerate(q_tokens_batch):
+        for t in tokens:
+            j = vocab_index.get(t)
+            if j is None:
+                continue  # từ không nằm trong vocab corpus - không đóng góp điểm (giống hệt
+                          # get_scores() gốc, `idf.get(q) or 0` -> 0 nếu từ không có idf).
+            rows.append(j)
+            cols.append(qi)
+            data.append(idf[j])
+    # scipy TỰ CỘNG DỒN các entry (row, col) trùng nhau khi dựng CSR từ bộ ba (data, (row, col)) -
+    # đúng hành vi mong muốn khi 1 từ xuất hiện LẶP LẠI trong cùng 1 câu hỏi (get_scores() gốc cũng
+    # cộng idf nhiều lần trong trường hợp đó, vì vòng lặp `for q in query` duyệt cả từ trùng).
+    weight_matrix = sp.csr_matrix(
+        (data, (rows, cols)), shape=(len(vocab_index), len(q_tokens_batch)), dtype=np.float32,
+    )
+    scores = (bm25_fast["matrix"] @ weight_matrix).toarray()  # (n_docs, n_questions)
+    return scores.T  # (n_questions, n_docs) - khớp shape với get_scores() gọi riêng từng câu hỏi
+
+
+# ---------------------------------------------------------------------------
 # Giai đoạn 1 + 2: hybrid retrieval (dense + BM25) -> RRF fusion -> candidate documents
 # ---------------------------------------------------------------------------
 
@@ -257,6 +453,7 @@ def rrf_fuse(
     dense_top_n: int = 100,
     bm25_top_n: int = 100,
     rrf_k: int = 60,
+    bm25_weight: float = 1.0,
 ) -> Dict[int, float]:
     """RRF fusion ở CẤP CHUNK cho MỘT câu hỏi.
 
@@ -265,6 +462,11 @@ def rrf_fuse(
         bm25_scores: mảng điểm BM25, 1 giá trị / chunk (cùng thứ tự).
         doc_ids: doc_id tương ứng từng chunk (cùng thứ tự, chỉ dùng để biết độ dài - hàm này
             KHÔNG gom theo doc, xem `aggregate_to_documents` cho bước đó).
+        bm25_weight: hệ số nhân cho phần đóng góp RRF của nhánh BM25 (nhánh dense LUÔN giữ hệ số
+            1.0 - đây là trọng số TƯƠNG ĐỐI của BM25 so với dense, thêm 2026-08-14 để thử giảm
+            lỗi nhầm văn bản cùng khuôn mẫu/khác thực thể riêng - xem docstring đầu file, mục
+            "TRỌNG SỐ BM25 TRONG RRF". Mặc định 1.0 = giữ NGUYÊN công thức RRF gốc (không đổi
+            hành vi/kết quả so với trước khi có tham số này).
 
     Returns:
         {chunk_index: rrf_score} - CHỈ chứa các chunk lọt top-N của ít nhất 1 trong 2 nhánh
@@ -286,7 +488,7 @@ def rrf_fuse(
     for rank, idx in enumerate(dense_top_idx, start=1):
         rrf_score[int(idx)] += 1.0 / (rrf_k + rank)
     for rank, idx in enumerate(bm25_top_idx, start=1):
-        rrf_score[int(idx)] += 1.0 / (rrf_k + rank)
+        rrf_score[int(idx)] += bm25_weight / (rrf_k + rank)
     return rrf_score
 
 
@@ -428,16 +630,21 @@ def run_pipeline(
     dense_top_n: int = 100,
     bm25_top_n: int = 100,
     rrf_k: int = 60,
+    bm25_weight: float = 1.0,
     candidate_docs: int = 20,
     question_batch_size: int = 64,
     query_prefix: str = "",
+    query_prompt_name: Optional[str] = None,
     collect_stages: bool = False,
-    evidence_output: Optional[Dict[str, List[dict]]] = None,
+    bm25_workers: int = 1,
+    bm25_fast: bool = False,
 ) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, List[str]]]]:
     """Trả về (predictions, stage_predictions).
 
-    `predictions` = kết quả CUỐI CÙNG (sau rerank + top-k) - luôn có, không đổi hành vi so với
-    trước đây.
+    `predictions` = kết quả CUỐI CÙNG - sau rerank+top-k NẾU `reranker_model` được truyền, hoặc
+    thẳng top-k của hybrid_fused (RRF, KHÔNG rerank) NẾU `reranker_model=None` (thêm 2026-08-14,
+    để so sánh nhiều embedding model KHÔNG cần tải reranker - hybrid_fused hiện là giai đoạn
+    ĐANG DÙNG THẬT trong cấu hình chính thức, xem claude/submission-log-task1.md).
 
     `stage_predictions` chỉ được điền nếu `collect_stages=True` (bật bằng --stage-eval ở CLI),
     gồm 3 giai đoạn TRUNG GIAN (đều cắt còn top_k document để so Recall@top_k công bằng với kết
@@ -446,6 +653,26 @@ def run_pipeline(
         "bm25_only"    : chỉ nhánh BM25 (sparse), KHÔNG qua dense/RRF/rerank.
         "hybrid_fused" : sau khi hợp nhất RRF (dense+BM25), TRƯỚC khi rerank.
     Nếu `collect_stages=False`, trả về stage_predictions = {} (rỗng).
+
+    `query_prompt_name`: giống `passage_prompt_name` của `encode_chunks()` - dùng cơ chế prompt
+    chính thức của sentence-transformers (`prompt_name=...`) THAY VÌ `query_prefix` nếu truyền
+    (bỏ qua `query_prefix` nếu cả 2 cùng truyền).
+
+    `bm25_workers` (thêm 2026-08-17): số tiến trình CPU chạy song song cho bước
+    `bm25_index.get_scores()` - bước này ĐO ĐƯỢC là nút thắt tốc độ thật sự của vòng lặp câu hỏi
+    (đơn luồng, thuần Python, KHÔNG được hưởng lợi từ cache embedding hay GPU). Mặc định 1 = giữ
+    NGUYÊN hành vi cũ (tuần tự, 1 nhân) - không đổi bất kỳ con số Recall/Precision nào dù bật hay
+    tắt (cùng 1 hàm get_scores(), chỉ đổi CÁCH phân phối lệnh gọi ra nhiều nhân CPU). Truyền 0
+    hoặc số âm (vd -1) để dùng TOÀN BỘ nhân CPU máy hiện tại (`os.cpu_count()`), hoặc 1 số dương cụ
+    thể để giới hạn. ⚠️ Đã gây MemoryError THẬT với worker count lớn trên corpus lớn (xem cảnh báo
+    ở `build_bm25_fast_matrix` phía trên) - ƯU TIÊN dùng `bm25_fast=True` thay vì tăng số này.
+
+    `bm25_fast` (thêm 2026-08-17, KHUYẾN NGHỊ thay cho bm25_workers): bật tính BM25 vector hoá
+    bằng ma trận thưa (xem `build_bm25_fast_matrix`/`bm25_scores_batch_fast`) - nhanh hơn NHIỀU so
+    với cả bản tuần tự lẫn bản multiprocessing, và an toàn bộ nhớ hơn hẳn (chỉ 1 bản trong RAM,
+    không nhân bản qua tiến trình). Nếu bm25_fast=True, bm25_workers bị BỎ QUA (không dùng
+    ProcessPoolExecutor nữa). PHẢI tự verify Recall khớp bản cũ trước khi tin dùng cho submission
+    thật (xem hướng dẫn ở --bm25-fast trong CLI).
     """
     import numpy as np
 
@@ -456,55 +683,92 @@ def run_pipeline(
     )
     doc_to_indices = build_doc_chunk_index(doc_ids) if collect_stages else None
 
-    for start in range(0, len(questions), question_batch_size):
-        batch = questions[start : start + question_batch_size]
-        # query_prefix chỉ dùng cho nhánh DENSE (embedding_model.encode ngay dưới đây) - BM25
-        # (q_tokens ở dưới) và rerank (dùng q["question"] gốc, không prefix) KHÔNG áp dụng prefix
-        # này, vì đó là quy ước riêng của bi-encoder E5-style.
-        batch_texts = [query_prefix + q["question"] for q in batch]
-        # show_progress_bar=False: cùng lý do như rerank_candidates() bên dưới - gọi lặp lại nhiều
-        # lần (1 lần/batch câu hỏi), để mặc định sẽ in progress bar rác mỗi lần gọi.
-        batch_dense_emb = embedding_model.encode(
-            batch_texts,
-            batch_size=question_batch_size,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ).astype(np.float32)
+    bm25_fast_data = None
+    bm25_executor = None
+    if bm25_fast:
+        bm25_fast_data = build_bm25_fast_matrix(bm25_index)
+    else:
+        n_bm25_workers = os.cpu_count() if bm25_workers is not None and bm25_workers <= 0 else bm25_workers
+        if n_bm25_workers and n_bm25_workers > 1:
+            from concurrent.futures import ProcessPoolExecutor
 
-        # (batch, n_chunks) - toàn bộ corpus embeddings đã nằm sẵn trong RAM (giống baseline_retrieval.py)
-        dense_sims_batch = batch_dense_emb @ chunk_embeddings.T
+            logger.info(
+                "Bật song song BM25 trên %d tiến trình CPU (bm25_workers) - chỉ tăng tốc, KHÔNG đổi "
+                "kết quả số học (cùng hàm rank_bm25.get_scores()).", n_bm25_workers,
+            )
+            bm25_executor = ProcessPoolExecutor(
+                max_workers=n_bm25_workers, initializer=_bm25_pool_init, initargs=(bm25_index,),
+            )
 
-        for i, q in enumerate(batch):
-            dense_scores = dense_sims_batch[i]
+    try:
+        for start in range(0, len(questions), question_batch_size):
+            batch = questions[start : start + question_batch_size]
+            # query_prefix/query_prompt_name chỉ dùng cho nhánh DENSE (embedding_model.encode ngay
+            # dưới đây) - BM25 (q_tokens ở dưới) và rerank (dùng q["question"] gốc, không prefix)
+            # KHÔNG áp dụng - đó là quy ước riêng của bi-encoder (E5-style prefix hoặc Qwen3-Embedding-
+            # style instruction prompt), không áp dụng cho BM25/cross-encoder.
+            encode_kwargs = dict(
+                batch_size=question_batch_size, convert_to_numpy=True, normalize_embeddings=True,
+                # show_progress_bar=False: gọi lặp lại nhiều lần (1 lần/batch câu hỏi), để mặc định sẽ
+                # in progress bar rác mỗi lần gọi.
+                show_progress_bar=False,
+            )
+            if query_prompt_name:
+                batch_texts = [q["question"] for q in batch]
+                encode_kwargs["prompt_name"] = query_prompt_name
+            else:
+                batch_texts = [query_prefix + q["question"] for q in batch]
+            batch_dense_emb = embedding_model.encode(batch_texts, **encode_kwargs).astype(np.float32)
+
+            # (batch, n_chunks) - toàn bộ corpus embeddings đã nằm sẵn trong RAM (giống baseline_retrieval.py)
+            dense_sims_batch = batch_dense_emb @ chunk_embeddings.T
+
+            # Tính TRƯỚC toàn bộ điểm BM25 cho CẢ BATCH - tách khỏi vòng lặp trong để không phải
+            # chờ tuần tự từng câu hỏi một như bản cũ. 3 chế độ (chỉ 1 chế độ được dùng/lần chạy):
+            #   1. bm25_fast_data (khuyến nghị) - 1 phép nhân ma trận thưa cho CẢ BATCH.
+            #   2. bm25_executor - song song qua nhiều tiến trình CPU (rủi ro MemoryError, xem cảnh
+            #      báo ở docstring bm25_workers phía trên).
+            #   3. Tuần tự (mặc định cũ, không đổi hành vi nếu không bật gì).
+            q_tokens_batch = [
+                q["question_segmented"].split() if q.get("question_segmented") else _naive_tokenize(q["question"])
+                for q in batch
+            ]
+            if bm25_fast_data is not None:
+                bm25_scores_batch = bm25_scores_batch_fast(bm25_fast_data, q_tokens_batch)
+            elif bm25_executor is not None:
+                bm25_scores_batch = list(bm25_executor.map(_bm25_score_one, q_tokens_batch))
+            else:
+                bm25_scores_batch = [np.asarray(bm25_index.get_scores(t)) for t in q_tokens_batch]
+
+            for i, q in enumerate(batch):
+                dense_scores = dense_sims_batch[i]
+                bm25_scores = bm25_scores_batch[i]
 
             q_tokens = q["question_segmented"].split() if q.get("question_segmented") else _naive_tokenize(q["question"])
             bm25_scores = np.asarray(bm25_index.get_scores(q_tokens))
 
             rrf_score = rrf_fuse(dense_scores, bm25_scores, doc_ids, dense_top_n, bm25_top_n, rrf_k)
             candidates = aggregate_to_documents(rrf_score, doc_ids, candidate_docs)
-            reranked_details = rerank_candidate_details(
-                reranker_model, q["question"], candidates, chunks, top_k
-            )
-            top_docs = [item["doc_id"] for item in reranked_details]
+            top_docs = rerank_candidates(reranker_model, q["question"], candidates, chunks, top_k)
 
             predictions[q["question_id"]] = top_docs
-            if evidence_output is not None:
-                evidence_output[q["question_id"]] = reranked_details
 
-            if collect_stages:
-                qid = q["question_id"]
-                stage_predictions["dense_only"][qid] = aggregate_chunks_to_docs_by_score(
-                    dense_scores, doc_to_indices, top_k
-                )
-                stage_predictions["bm25_only"][qid] = aggregate_chunks_to_docs_by_score(
-                    bm25_scores, doc_to_indices, top_k
-                )
-                # candidates đã sort giảm dần theo RRF score (aggregate_to_documents) - lấy top_k
-                # đầu tiên để so Recall@top_k công bằng với kết quả cuối (TRƯỚC khi qua rerank).
-                stage_predictions["hybrid_fused"][qid] = [doc_id for doc_id, _, _ in candidates[:top_k]]
+                if collect_stages:
+                    qid = q["question_id"]
+                    stage_predictions["dense_only"][qid] = aggregate_chunks_to_docs_by_score(
+                        dense_scores, doc_to_indices, top_k
+                    )
+                    stage_predictions["bm25_only"][qid] = aggregate_chunks_to_docs_by_score(
+                        bm25_scores, doc_to_indices, top_k
+                    )
+                    # candidates đã sort giảm dần theo RRF score (aggregate_to_documents) - lấy top_k
+                    # đầu tiên để so Recall@top_k công bằng với kết quả cuối (TRƯỚC khi qua rerank).
+                    stage_predictions["hybrid_fused"][qid] = [doc_id for doc_id, _, _ in candidates[:top_k]]
 
-        logger.info("Đã xử lý %d/%d câu hỏi", min(start + question_batch_size, len(questions)), len(questions))
+            logger.info("Đã xử lý %d/%d câu hỏi", min(start + question_batch_size, len(questions)), len(questions))
+    finally:
+        if bm25_executor is not None:
+            bm25_executor.shutdown(wait=True)
 
     return predictions, stage_predictions
 
@@ -512,7 +776,14 @@ def run_pipeline(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--embedding-model", required=True, help="vd: models/vietnamese-legal-embedding-ft hoặc model gốc chưa fine-tune")
-    parser.add_argument("--reranker-model", required=True, help="vd: models/reranker-ft hoặc model gốc chưa fine-tune")
+    parser.add_argument(
+        "--reranker-model", default=None,
+        help="vd: models/reranker-ft hoặc model gốc chưa fine-tune. TÙY CHỌN (thêm 2026-08-14) - "
+             "nếu KHÔNG truyền, bỏ qua bước rerank hoàn toàn (không tải/cần reranker model), kết "
+             "quả cuối = thẳng top-k của hybrid_fused (RRF dense+BM25, KHÔNG rerank) - đúng cấu "
+             "hình chính thức hiện tại (xem claude/submission-log-task1.md). Hữu ích khi so sánh "
+             "nhiều embedding model KHÔNG cần tải reranker mỗi lần (tốn thời gian/VRAM không cần thiết).",
+    )
     parser.add_argument("--chunks", required=True, help="data/processed/chunks_corpus.jsonl (output Phase 4 của Kiên)")
     parser.add_argument("--questions", required=True, help="File câu hỏi: train.json-shape hoặc *_preprocessed.jsonl của Kiên")
     parser.add_argument("--output", required=True)
@@ -520,9 +791,54 @@ def main() -> None:
     parser.add_argument("--dense-top-n", type=int, default=100, help="Số chunk top dense đưa vào RRF")
     parser.add_argument("--bm25-top-n", type=int, default=100, help="Số chunk top BM25 đưa vào RRF")
     parser.add_argument("--rrf-k", type=int, default=60)
+    parser.add_argument(
+        "--bm25-weight", type=float, default=1.0,
+        help="Hệ số nhân cho đóng góp RRF của nhánh BM25 (dense luôn giữ hệ số 1.0) - thêm "
+             "2026-08-14 để thử giảm lỗi nhầm văn bản cùng khuôn mẫu/khác thực thể riêng (xem "
+             "docstring đầu file). Mặc định 1.0 = công thức RRF gốc, không đổi kết quả. Muốn dò "
+             "nhiều giá trị cùng lúc, dùng src/evaluation/sweep_bm25_weight.py thay vì chạy lại "
+             "script này nhiều lần (rẻ hơn nhiều - không cần encode/build BM25 index lại).",
+    )
     parser.add_argument("--candidate-docs", type=int, default=20, help="Số document ứng viên đưa vào rerank (giai đoạn 3)")
-    parser.add_argument("--batch-size", type=int, default=128, help="Batch size encode corpus (dense)")
+    parser.add_argument("--batch-size", type=int, default=64, help="Batch size encode corpus (dense)")
     parser.add_argument("--question-batch-size", type=int, default=128)
+    parser.add_argument(
+        "--bm25-workers", type=int, default=1,
+        help=(
+            "TÙY CHỌN (thêm 2026-08-17, tối ưu tốc độ) - số tiến trình CPU chạy song song cho "
+            "bước bm25_index.get_scores(), bước ĐO ĐƯỢC là nút thắt thật sự của vòng lặp câu hỏi "
+            "(đơn luồng thuần Python, không được cache embedding/GPU giúp). Mặc định 1 = hành vi "
+            "CŨ (tuần tự) - KHÔNG đổi Recall/Precision dù bật hay tắt (cùng công thức "
+            "rank_bm25.get_scores(), chỉ đổi cách phân phối ra nhiều nhân CPU). Truyền -1 (hoặc 0) "
+            "để dùng TOÀN BỘ nhân CPU máy hiện tại, hoặc số dương cụ thể để giới hạn số tiến trình. "
+            "⚠️ Đã gây MemoryError THẬT với worker count LỚN (16) trên corpus lớn (spawn trên "
+            "Windows phải nhân bản toàn bộ BM25 index cho MỖI tiến trình) - AN TOÀN HƠN nếu dùng số "
+            "nhỏ (vd 3-4), rủi ro bộ nhớ tăng dần theo số này. Đây là lựa chọn AN TOÀN/DỄ ĐOÁN hơn "
+            "--bm25-fast (rủi ro bộ nhớ CỐ ĐỊNH, tỉ lệ thuận số worker) - dùng --bm25-fast nếu muốn "
+            "tốc độ cao hơn NHIỀU và chấp nhận rủi ro bộ nhớ khác (xem help --bm25-fast)."
+        ),
+    )
+    parser.add_argument(
+        "--bm25-fast", action="store_true", default=False,
+        help=(
+            "TÙY CHỌN (thêm 2026-08-17) - tính điểm BM25 bằng 1 phép nhân ma trận thưa "
+            "(scipy.sparse) cho CẢ BATCH câu hỏi cùng lúc, thay vì gọi rank_bm25.get_scores() lặp "
+            "lại tuần tự/qua nhiều tiến trình. NHANH HƠN NHIỀU (đo thực tế: ~500-700x tốc độ mỗi "
+            "câu hỏi so với get_scores() gốc, ở corpus quy mô 50K document/12 triệu phần tử) và "
+            "KHÔNG nhân bản dữ liệu qua nhiều tiến trình như --bm25-workers (chỉ 1 bản trong RAM) - "
+            "nhưng ⚠️ bước xây ma trận (1 lần, trước khi vào vòng lặp câu hỏi) VẪN cần RAM đáng kể "
+            "TỈ LỆ THUẬN với kích cỡ corpus (đã đo thực tế ~1.6GB đỉnh cho corpus 50K document/12 "
+            "triệu phần tử khác-0 - CHƯA đo được ở quy mô 351K document thật của dự án, script sẽ "
+            "tự in ước tính RAM cụ thể TRƯỚC khi làm bước này, kiểm tra RAM còn trống qua Task "
+            "Manager và Ctrl+C dừng lại nếu ước tính đó quá cao). Cần cài scipy + pandas (pip "
+            "install scipy pandas). Dùng LẠI đúng idf/doc_freqs/k1/b đã tính sẵn của rank_bm25 nên "
+            "về công thức Y HỆT get_scores() gốc (đã verify bằng test riêng, xem "
+            "claude/submission-log-task1.md), có thể lệch CỰC NHỎ ở chữ số thập phân xa (thứ tự "
+            "cộng dấu phẩy động khác nhau) - không đủ đổi thứ hạng trong thực tế, nhưng BẮT BUỘC tự "
+            "verify Recall khớp bản cũ (--bm25-fast tắt) trên val_split_20 TRƯỚC khi tin dùng cho "
+            "submission thật. Bỏ qua --bm25-workers nếu bật cờ này (2 cơ chế loại trừ nhau)."
+        ),
+    )
     parser.add_argument("--embedding-cache", default=None)
     parser.add_argument("--limit-questions", type=int, default=None, help="Chỉ chạy N câu hỏi đầu (debug nhanh)")
     parser.add_argument("--device", default="auto")
@@ -535,12 +851,45 @@ def main() -> None:
         help='Prefix thêm trước mỗi chunk khi encode DENSE (E5-style, mặc định "passage: "). KHÔNG áp dụng cho BM25/rerank. Truyền "" để tắt.',
     )
     parser.add_argument(
+        "--query-instruct", default=None,
+        help='TÙY CHỌN (thêm 2026-08-15, cho model kiểu GTE-Qwen2-instruct dùng format '
+             '"Instruct: {task}\\nQuery: {query}") - truyền CHỈ phần {task} (1 dòng, không cần tự gõ '
+             'ký tự xuống dòng), script tự ghép thành query_prefix = f"Instruct: {task}\\nQuery: " '
+             'ở PHÍA PYTHON (tránh phải nhét ký tự xuống dòng thật vào tham số dòng lệnh PowerShell - '
+             'dễ vỡ escaping giữa 1 lần chạy dài). Ghi đè --query-prefix nếu cả 2 cùng truyền.',
+    )
+    parser.add_argument(
+        "--query-prompt-name", default=None,
+        help="TÙY CHỌN (thêm 2026-08-14, cho model kiểu Qwen3-Embedding đóng gói sẵn prompt "
+             "template trong config - vd 'query') - dùng cơ chế prompt CHÍNH THỨC của "
+             "sentence-transformers (model.encode(..., prompt_name=...)) THAY VÌ --query-prefix "
+             "(bỏ qua --query-prefix nếu cả 2 cùng truyền). Kiểm tra tên prompt hợp lệ bằng "
+             "print(model.prompts) sau khi load model nếu không chắc model có hỗ trợ/tên gì.",
+    )
+    parser.add_argument(
+        "--passage-prompt-name", default=None,
+        help="Giống --query-prompt-name nhưng cho nhánh passage/chunk corpus (thay vì --passage-prefix).",
+    )
+    parser.add_argument(
+        "--max-seq-length", type=int, default=None,
+        help="TÙY CHỌN - ghi đè model.max_seq_length sau khi load (vd model AITeamVN/Vietnamese_Embedding "
+             "khuyến nghị 2048, cao hơn default của nhiều model - chunk pháp lý dài có thể bị cắt "
+             "mất nếu để mặc định). Không truyền = giữ nguyên default của model.",
+    )
+    parser.add_argument(
         "--fp16-inference", dest="fp16_inference", action="store_true", default=True,
         help="Cast embedding model sang fp16 trên GPU để encode nhanh hơn (mặc định BẬT, chỉ ảnh hưởng inference, không train nên không cần lo mất ổn định).",
     )
     parser.add_argument(
         "--no-fp16-inference", dest="fp16_inference", action="store_false",
         help="Tắt fp16, encode ở fp32 (chậm hơn nhưng an toàn nếu nghi ngờ fp16 làm sai kết quả).",
+    )
+    parser.add_argument(
+        "--trust-remote-code", action="store_true", default=False,
+        help="TÙY CHỌN (thêm 2026-08-15, cho model đóng gói code tùy biến trong repo HuggingFace - "
+             "vd Alibaba-NLP/gte-Qwen2-1.5B-instruct - sentence-transformers sẽ báo lỗi yêu cầu cờ "
+             "này nếu thiếu khi load model). CHỈ bật cho model bạn tin tưởng nguồn gốc (tải code "
+             "tùy biến về máy chạy y hệt weight) - KHÔNG bật tùy tiện cho model lạ.",
     )
     parser.add_argument(
         "--stage-eval", action="store_true", default=False,
@@ -565,6 +914,17 @@ def main() -> None:
     except ImportError:
         logger.error("Thiếu rank_bm25. Chạy: pip install rank_bm25")
         sys.exit(1)
+    if args.bm25_fast:
+        try:
+            import scipy  # noqa: F401
+        except ImportError:
+            logger.error("--bm25-fast cần scipy. Chạy: pip install scipy")
+            sys.exit(1)
+        try:
+            import pandas  # noqa: F401
+        except ImportError:
+            logger.error("--bm25-fast cần pandas (map từ vựng nhanh). Chạy: pip install pandas")
+            sys.exit(1)
 
     device = resolve_device(args.device)
     if device == "cuda":
@@ -579,8 +939,13 @@ def main() -> None:
     if args.limit_questions:
         questions = questions[: args.limit_questions]
 
-    logger.info("Load embedding model: %s", args.embedding_model)
-    embedding_model = SentenceTransformer(args.embedding_model, device=device)
+    logger.info("Load embedding model: %s (trust_remote_code=%s)", args.embedding_model, args.trust_remote_code)
+    embedding_model = SentenceTransformer(
+        args.embedding_model, device=device, trust_remote_code=args.trust_remote_code,
+    )
+    if args.max_seq_length is not None:
+        embedding_model.max_seq_length = args.max_seq_length
+        logger.info("Đã ghi đè embedding_model.max_seq_length = %d", args.max_seq_length)
     if device == "cuda" and args.fp16_inference:
         # Encode ở fp16 - vì đây là INFERENCE (không backward/train) nên không cần lo loss
         # scaling/mất ổn định như lúc train - trên GPU có tensor core (Ampere+) thường nhanh hơn
@@ -592,15 +957,35 @@ def main() -> None:
             logger.info("Đã cast embedding model sang fp16 để encode nhanh hơn (dùng --no-fp16-inference để tắt).")
         except Exception as e:  # noqa: BLE001
             logger.warning("Không cast được model sang fp16 (%s) - encode ở fp32 như bình thường.", e)
-    logger.info("Load reranker model: %s", args.reranker_model)
-    reranker_model = CrossEncoder(args.reranker_model, num_labels=1, device=device)
 
-    logger.info(
-        'Dùng prefix E5-style cho nhánh dense: query_prefix=%r, passage_prefix=%r (đổi bằng --query-prefix/--passage-prefix nếu model khác không cần)',
-        args.query_prefix, args.passage_prefix,
-    )
+    reranker_model = None
+    if args.reranker_model:
+        logger.info("Load reranker model: %s", args.reranker_model)
+        reranker_model = CrossEncoder(args.reranker_model, num_labels=1, device=device)
+    else:
+        logger.info("KHÔNG truyền --reranker-model - bỏ qua bước rerank, kết quả cuối = top-k của hybrid_fused (RRF, không rerank).")
+
+    if args.query_instruct:
+        args.query_prefix = f"Instruct: {args.query_instruct}\nQuery: "
+        logger.info(
+            "Đã ghép --query-instruct thành query_prefix (ghép ở phía Python, tránh lỗi escaping "
+            "ký tự xuống dòng trên dòng lệnh): %r", args.query_prefix,
+        )
+
+    if args.query_prompt_name or args.passage_prompt_name:
+        logger.info(
+            "Dùng prompt CHÍNH THỨC của sentence-transformers: query_prompt_name=%r, passage_prompt_name=%r "
+            "(bỏ qua --query-prefix/--passage-prefix tương ứng nếu có truyền).",
+            args.query_prompt_name, args.passage_prompt_name,
+        )
+    else:
+        logger.info(
+            'Dùng prefix E5-style cho nhánh dense: query_prefix=%r, passage_prefix=%r (đổi bằng --query-prefix/--passage-prefix nếu model khác không cần, hoặc dùng --query-prompt-name/--passage-prompt-name nếu model đóng gói sẵn prompt kiểu Qwen3-Embedding)',
+            args.query_prefix, args.passage_prefix,
+        )
     chunk_embeddings = encode_chunks(
-        embedding_model, chunks, args.batch_size, args.embedding_cache, passage_prefix=args.passage_prefix
+        embedding_model, chunks, args.batch_size, args.embedding_cache,
+        passage_prefix=args.passage_prefix, passage_prompt_name=args.passage_prompt_name,
     )
     bm25_index = build_bm25_index(chunks)
 
@@ -618,10 +1003,14 @@ def main() -> None:
         dense_top_n=args.dense_top_n,
         bm25_top_n=args.bm25_top_n,
         rrf_k=args.rrf_k,
+        bm25_weight=args.bm25_weight,
         candidate_docs=args.candidate_docs,
         question_batch_size=args.question_batch_size,
         query_prefix=args.query_prefix,
+        query_prompt_name=args.query_prompt_name,
         collect_stages=args.stage_eval,
+        bm25_workers=args.bm25_workers,
+        bm25_fast=args.bm25_fast,
     )
 
     output_path = Path(args.output)

@@ -188,6 +188,45 @@ def main() -> None:
         "--passage-prefix", default="passage: ",
         help='Prefix thêm trước văn bản/passage khi train (E5-style, mặc định "passage: "). Truyền "" để tắt.',
     )
+    parser.add_argument(
+        "--max-seq-length", type=int, default=None,
+        help="Ghi đè model.max_seq_length SAU khi load base model, TRƯỚC khi train (thêm 2026-08-14, "
+             "cho model không phải E5-style, vd AITeamVN/Vietnamese_Embedding khuyến nghị 2048 theo "
+             "model card). QUAN TRỌNG: phải dùng CÙNG giá trị này khi encode/inference sau này "
+             "(--max-seq-length của full_pipeline_eval.py) - lệch giá trị giữa train và inference có "
+             "thể làm giảm chất lượng model.",
+    )
+    parser.add_argument(
+        "--fp16", action="store_true",
+        help="Bật mixed-precision training (use_amp=True trong model.fit(), thêm 2026-08-15). "
+             "sentence-transformers MẶC ĐỊNH train fp32 (use_amp=False) - với model lớn hơn "
+             "(vd AITeamVN/Vietnamese_Embedding ~568M, kiến trúc XLM-R-large 24 lớp, so với "
+             "bqbbao6 ~278M base 12 lớp) cộng --max-seq-length dài (2048 so với ~512 trước đây, "
+             "chi phí attention tăng theo BÌNH PHƯƠNG độ dài chuỗi), train fp32 có thể chậm hơn "
+             "đáng kể. Bật cờ này để dùng fp16 autocast, thường nhanh hơn ~1.5-2x trên GPU NVIDIA "
+             "đời mới (Turing/Ampere trở lên, có Tensor Core) mà chất lượng gần như không đổi. "
+             "Không bật mặc định để không đổi hành vi cũ (bqbbao6 đã train ổn ở fp32).",
+    )
+    parser.add_argument(
+        "--checkpoint-steps", type=int, default=200,
+        help="Lưu checkpoint (model tạm) mỗi N step vào <output-dir>-checkpoints (thêm 2026-08-15). "
+             "sentence-transformers MẶC ĐỊNH KHÔNG lưu checkpoint giữa chừng (chỉ lưu model cuối cùng "
+             "SAU KHI chạy xong toàn bộ epochs) - với những lần chạy dài (vài tiếng trở lên, đặc biệt "
+             "model lớn + --max-seq-length dài dễ gây tràn VRAM giữa chừng nếu 1 batch ngẫu nhiên chứa "
+             "chunk gần độ dài tối đa), nếu crash (OOM, mất điện, lỗi driver...) ở step 1000/1146 sẽ MẤT "
+             "TRẮNG toàn bộ tiến độ, phải chạy lại từ đầu. Truyền 0 để tắt hẳn checkpoint (giống hành vi "
+             "cũ trước 2026-08-15).",
+    )
+    parser.add_argument(
+        "--checkpoint-keep", type=int, default=3,
+        help="Giữ lại tối đa N checkpoint gần nhất (xoá bớt checkpoint cũ để đỡ tốn ổ đĩa), mặc định 3.",
+    )
+    parser.add_argument(
+        "--resume-from-checkpoint", action="store_true",
+        help="Tiếp tục train từ checkpoint gần nhất trong <output-dir>-checkpoints nếu có (thêm "
+             "2026-08-15) - dùng khi lần chạy trước bị crash/dừng giữa chừng, tránh phải train lại "
+             "từ đầu.",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -214,6 +253,9 @@ def main() -> None:
     device = resolve_device(args.device)
     logger.info("Load base model: %s", args.base_model)
     model = SentenceTransformer(args.base_model, device=device)
+    if args.max_seq_length is not None:
+        model.max_seq_length = args.max_seq_length
+        logger.info("Đã ghi đè model.max_seq_length = %d (áp dụng cho cả train lẫn hard-negative mining)", args.max_seq_length)
     logger.info("Training device resolved to: %s", model.device)
 
     logger.info(
@@ -243,17 +285,8 @@ def main() -> None:
         logger.info("Dùng MultipleNegativesRankingLoss với %d cặp (in-batch negatives)", len(train_examples))
 
     train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=args.batch_size)
-    effective_steps_per_epoch = args.steps_per_epoch or len(train_dataloader)
-    warmup_steps = int(effective_steps_per_epoch * args.epochs * 0.1)
-    logger.info(
-        "Bắt đầu fine-tune: %d epoch, batch_size=%d, steps_per_epoch=%d, "
-        "warmup_steps=%d, amp=%s",
-        args.epochs,
-        args.batch_size,
-        effective_steps_per_epoch,
-        warmup_steps,
-        args.use_amp,
-    )
+    warmup_steps = int(len(train_dataloader) * args.epochs * 0.1)
+    logger.info("Bắt đầu fine-tune: %d epoch, batch_size=%d, warmup_steps=%d", args.epochs, args.batch_size, warmup_steps)
 
     model.fit(
         train_objectives=[(train_dataloader, loss)],
@@ -268,14 +301,6 @@ def main() -> None:
         resume_from_checkpoint=args.resume_from_checkpoint,
         show_progress_bar=True,
     )
-
-    if device == "cuda":
-        import torch
-
-        logger.info(
-            "Peak CUDA memory reserved: %.2f GiB",
-            torch.cuda.max_memory_reserved() / (1024**3),
-        )
 
     logger.info("Đã lưu model fine-tune tại: %s", args.output_dir)
     logger.info(

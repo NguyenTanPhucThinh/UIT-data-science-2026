@@ -11,7 +11,7 @@ __pycache__/
 models/
 
 # Output/artifact sinh ra khi chạy script (predictions, report, embedding cache...)
-outputs/
+outputs
 
 # Biến môi trường thật (chỉ .env.example.txt mới nên commit)
 .env
