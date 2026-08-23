@@ -569,19 +569,26 @@ def rerank_candidate_details(
     if not candidates:
         return []
 
-    pairs = [(question, chunks[chunk_idx]["passage"]) for _, chunk_idx, _ in candidates]
-    # show_progress_bar=False: hàm này gọi 1 LẦN CHO MỖI CÂU HỎI (vòng lặp bên ngoài) - nếu không
-    # tắt tường minh, sentence-transformers tự in progress bar riêng mỗi lần gọi (mặc định bật khi
-    # log level <= INFO), ra hàng nghìn dòng "Batches: 100%|..." rác màn hình, không có ích (mỗi
-    # câu hỏi chỉ có vài chục candidate, chấm điểm gần như tức thì).
-    scores = reranker_model.predict(pairs, show_progress_bar=False)
+    if reranker_model is None:
+        # --reranker-model để trống (thêm 2026-08-14, xem docstring run_pipeline()) - KHÔNG tải/dùng
+        # reranker, trả thẳng top-k của candidates đã sắp theo RRF score (aggregate_to_documents),
+        # KHÔNG rerank thêm. Đây là nhánh bị mất khi resolve merge conflict trước (2026-08-21) -
+        # thiếu nhánh này gây AttributeError: 'NoneType' object has no attribute 'predict'.
+        ranked = [(cand, None) for cand in candidates[:top_k]]
+    else:
+        pairs = [(question, chunks[chunk_idx]["passage"]) for _, chunk_idx, _ in candidates]
+        # show_progress_bar=False: hàm này gọi 1 LẦN CHO MỖI CÂU HỎI (vòng lặp bên ngoài) - nếu không
+        # tắt tường minh, sentence-transformers tự in progress bar riêng mỗi lần gọi (mặc định bật khi
+        # log level <= INFO), ra hàng nghìn dòng "Batches: 100%|..." rác màn hình, không có ích (mỗi
+        # câu hỏi chỉ có vài chục candidate, chấm điểm gần như tức thì).
+        scores = reranker_model.predict(pairs, show_progress_bar=False)
+        ranked = sorted(
+            zip(candidates, scores), key=lambda item: -float(item[1])
+        )[:top_k]
 
-    reranked = sorted(
-        zip(candidates, scores), key=lambda item: -float(item[1])
-    )
     details: List[dict] = []
     for rank, ((doc_id, corpus_chunk_index, rrf_score), reranker_score) in enumerate(
-        reranked[:top_k], start=1
+        ranked, start=1
     ):
         chunk = chunks[corpus_chunk_index]
         details.append(
@@ -597,7 +604,7 @@ def rerank_candidate_details(
                 "passage": chunk["passage"],
                 "retrieval_rank": rank,
                 "rrf_score": float(rrf_score),
-                "reranker_score": float(reranker_score),
+                "reranker_score": float(reranker_score) if reranker_score is not None else None,
             }
         )
     return details
@@ -744,14 +751,11 @@ def run_pipeline(
                 dense_scores = dense_sims_batch[i]
                 bm25_scores = bm25_scores_batch[i]
 
-            q_tokens = q["question_segmented"].split() if q.get("question_segmented") else _naive_tokenize(q["question"])
-            bm25_scores = np.asarray(bm25_index.get_scores(q_tokens))
+                rrf_score = rrf_fuse(dense_scores, bm25_scores, doc_ids, dense_top_n, bm25_top_n, rrf_k, bm25_weight)
+                candidates = aggregate_to_documents(rrf_score, doc_ids, candidate_docs)
+                top_docs = rerank_candidates(reranker_model, q["question"], candidates, chunks, top_k)
 
-            rrf_score = rrf_fuse(dense_scores, bm25_scores, doc_ids, dense_top_n, bm25_top_n, rrf_k)
-            candidates = aggregate_to_documents(rrf_score, doc_ids, candidate_docs)
-            top_docs = rerank_candidates(reranker_model, q["question"], candidates, chunks, top_k)
-
-            predictions[q["question_id"]] = top_docs
+                predictions[q["question_id"]] = top_docs
 
                 if collect_stages:
                     qid = q["question_id"]

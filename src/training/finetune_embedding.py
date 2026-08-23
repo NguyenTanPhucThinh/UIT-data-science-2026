@@ -33,6 +33,7 @@ sai). Mặc định script này tự thêm 2 prefix trên cho mọi cặp traini
 from __future__ import annotations
 
 import argparse
+import json  # dùng bởi mine_hard_negatives_from_ranks() (thêm 2026-08-22)
 import logging
 import random
 import sys
@@ -148,6 +149,80 @@ def mine_hard_negatives(
     return triplets
 
 
+def mine_hard_negatives_from_ranks(
+    pairs,
+    gold_by_qid,
+    ranks_path: str,
+    chunks_path: str,
+    top_k: int = 5,
+    max_chars: int = 2000,
+    passage_prefix: str = "",
+):
+    """Hard negative lấy TỪ CHÍNH THỨ HẠNG CỦA RETRIEVER THẬT (thêm 2026-08-22) — chất lượng cao hơn
+    hẳn `mine_hard_negatives()` ở trên, và KHÔNG tốn GPU vì tái dùng file thứ hạng đã sinh sẵn.
+
+    Vì sao cần: bản `mine_hard_negatives()` cũ chỉ lấy mẫu NGẪU NHIÊN `pool_size=2000` trên 8.532 văn
+    bản (23%) và chỉ dùng CHUNK ĐẦU TIÊN mỗi văn bản — negative vừa ít vừa dễ, model học được rất ít
+    (chính docstring hàm đó đã ghi nhận là bản tạm). Đây có thể là nửa còn lại của lý do dòng #12
+    fine-tune thất bại (nửa kia là learning rate 2e-5 x 3 epoch, xem `--learning-rate`).
+
+    Cách làm: `ranks_path` (.npz sinh bởi `src/evaluation/ensemble_fusion.py rank`) chứa top-N chunk mà
+    retriever ĐANG DÙNG THẬT xếp cho ĐÚNG các câu hỏi train này. Lấy các chunk xếp hạng cao NHƯNG
+    thuộc document KHÔNG nằm trong đáp án -> đó chính là những lỗi thật retriever đang mắc, tức
+    negative khó nhất và sát thực tế nhất có thể có.
+    """
+    import numpy as np
+
+    d = np.load(ranks_path, allow_pickle=False)
+    qids = [str(q) for q in d["question_ids"]]
+    ranks = d["ranks"]
+    row_of = {q: i for i, q in enumerate(qids)}
+
+    logger.info("Đọc chunk từ %s để lấy text negative...", chunks_path)
+    chunk_doc, chunk_text = [], []
+    with open(chunks_path, encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            chunk_doc.append(str(obj["doc_id"]))
+            chunk_text.append(obj["passage"])
+    logger.info("Đã đọc %d chunk", len(chunk_doc))
+
+    triplets = []
+    missing = 0
+    for question, positive, qid, _pos_doc_id in pairs:
+        r = row_of.get(str(qid))
+        if r is None:
+            missing += 1
+            continue
+        gold = gold_by_qid.get(str(qid), set())
+        n = 0
+        for ci in ranks[r]:
+            ci = int(ci)
+            if chunk_doc[ci] in gold:
+                continue  # BỎ QUA mọi chunk thuộc document ĐÚNG (kể cả chunk khác của cùng doc)
+            triplets.append((question, positive, passage_prefix + chunk_text[ci][:max_chars]))
+            n += 1
+            if n >= top_k:
+                break
+
+    if missing:
+        logger.warning(
+            "%d cặp không tìm thấy question_id trong %s — bỏ qua. Kiểm tra file thứ hạng có được "
+            "sinh ĐÚNG trên tập câu hỏi đang train hay không.", missing, ranks_path,
+        )
+    logger.info("Tạo được %d triplet từ thứ hạng retriever thật (top_k=%d/câu hỏi)", len(triplets), top_k)
+    return triplets
+
+
+def _model_is_normalized(model) -> bool:
+    """Model có module Normalize không (embedding nằm trên mặt cầu đơn vị)? Dùng để chặn cấu hình
+    TripletLoss margin > 2 vốn KHÔNG BAO GIỜ thoả mãn được — xem cảnh báo trong main()."""
+    try:
+        return any(type(m).__name__ == "Normalize" for m in model._modules.values())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fine-tune embedding model cho Task 1 - LegalIR")
     parser.add_argument("--base-model", required=True, help="vd: bqbbao6/VN_legal_embedding_512")
@@ -174,10 +249,50 @@ def main() -> None:
     )
     parser.add_argument("--checkpoint-save-steps", type=int, default=100)
     parser.add_argument("--checkpoint-save-total-limit", type=int, default=2)
-    parser.add_argument("--resume-from-checkpoint", action="store_true")
+    # ⚠️ ĐÃ XOÁ 1 bản `--resume-from-checkpoint` TRÙNG ở đây (2026-08-22). Bản còn lại nằm ở cuối
+    # hàm (có help đầy đủ). Trùng option string làm argparse ném ArgumentError NGAY khi dựng parser
+    # -> script CRASH ở MỌI lệnh gọi, không chạy được lần nào kể từ lần merge 2026-08-18. Đây là bug
+    # THỨ 4 cùng gốc merge conflict đó (3 bug trước ở full_pipeline_eval.py).
+    # BÀI HỌC: `python -m py_compile` KHÔNG bắt được lỗi này (chỉ kiểm tra cú pháp, không dựng
+    # parser). Muốn kiểm tra thật phải chạy `python -m <module> --help`.
     parser.add_argument("--max-chars", type=int, default=2000, help="Độ dài tối đa (ký tự) mỗi chunk dùng để train")
+    parser.add_argument(
+        "--learning-rate", type=float, default=2e-5,
+        help="Learning rate cho AdamW (thêm 2026-08-22). TRƯỚC ĐÂY KHÔNG có tham số này: model.fit() "
+             "dùng mặc định 2e-5 của sentence-transformers. Với model đã train RẤT KỸ từ đầu (vd "
+             "AITeamVN/Vietnamese_Embedding: 568M tham số, 1,1 TRIỆU triplet) mà fine-tune tiếp trên "
+             "tập nhỏ (~7-8 nghìn cặp), 2e-5 x 3 epoch là công thức gây CATASTROPHIC FORGETTING - đúng "
+             "điều đã xảy ra ở dòng #12 (Score PUBLIC 0.8922, THẤP HƠN bản pretrained 0.9058). "
+             "Khuyến nghị fine-tune NHẸ TAY: 5e-6 hoặc thấp hơn, kèm --epochs 1.",
+    )
     parser.add_argument("--hard-negatives", action="store_true", help="Bật hard negative mining (TripletLoss thay vì MultipleNegativesRankingLoss)")
     parser.add_argument("--hard-negative-top-k", type=int, default=5)
+    parser.add_argument(
+        "--loss", choices=["triplet", "mnrl"], default="triplet",
+        help="Hàm mất mát khi bật --hard-negatives (thêm 2026-08-23). 'mnrl' = "
+             "MultipleNegativesRankingLoss — CHUẨN cho fine-tune retriever: softmax trên cosine, "
+             "dùng hard negative tường minh CỘNG in-batch negatives, KHÔNG có margin nên không thể "
+             "thoái hoá. 'triplet' = mặc định cũ, GIỮ để tái lập lần chạy trước — nhưng đã gây SỤP "
+             "ĐỔ BIỂU DIỄN thật ngày 2026-08-22 (Recall 0.92 -> 0.0046). KHUYẾN NGHỊ: mnrl.",
+    )
+    parser.add_argument(
+        "--triplet-margin", type=float, default=5.0,
+        help="Margin cho TripletLoss (mặc định 5.0 = mặc định của sentence-transformers). ⚠️ Với "
+             "model CÓ chuẩn hoá L2 thì khoảng cách Euclid tối đa chỉ = 2, nên margin > 2 KHÔNG BAO "
+             "GIỜ thoả mãn được và gây sụp đổ biểu diễn — script sẽ CHẶN cấu hình đó.",
+    )
+    parser.add_argument(
+        "--hard-negative-ranks", default=None,
+        help="File .npz thứ hạng (sinh bởi `src/evaluation/ensemble_fusion.py rank`) trên ĐÚNG tập câu "
+             "hỏi đang train (thêm 2026-08-22). Nếu truyền, hard negative lấy từ chính top-N của "
+             "RETRIEVER THẬT thay vì lấy mẫu ngẫu nhiên 2000/8532 văn bản như bản cũ — negative KHÓ "
+             "hơn hẳn, sát lỗi thật của pipeline, và KHÔNG tốn GPU (tái dùng file đã có). "
+             "Vd: outputs/cache/ranks_hold_v1.npz (top-200 cho 5602 câu train_split_80).",
+    )
+    parser.add_argument(
+        "--hard-negative-chunks", default="data/processed/chunks_corpus.jsonl",
+        help="File chunk mà --hard-negative-ranks tham chiếu tới (chỉ số dòng = chỉ số chunk).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="'auto' (mặc định, ưu tiên GPU nếu có), 'cuda', hoặc 'cpu'")
     parser.add_argument(
@@ -271,14 +386,58 @@ def main() -> None:
         sys.exit(1)
 
     if args.hard_negatives:
-        corpus = CorpusReader(args.corpus)
-        triplets = mine_hard_negatives(
-            model, pairs, corpus, top_k=args.hard_negative_top_k, max_chars=args.max_chars,
-            passage_prefix=args.passage_prefix,
-        )
+        if args.hard_negative_ranks:
+            # Nguồn negative TỐT HƠN: lấy từ thứ hạng của retriever THẬT (xem docstring hàm).
+            gold_by_qid = {
+                str(qid): set(str(d) for d in item["answer"])
+                for qid, item in load_labeled_questions(args.train_json).items()
+            }
+            triplets = mine_hard_negatives_from_ranks(
+                pairs, gold_by_qid, args.hard_negative_ranks, args.hard_negative_chunks,
+                top_k=args.hard_negative_top_k, max_chars=args.max_chars,
+                passage_prefix=args.passage_prefix,
+            )
+        else:
+            corpus = CorpusReader(args.corpus)
+            triplets = mine_hard_negatives(
+                model, pairs, corpus, top_k=args.hard_negative_top_k, max_chars=args.max_chars,
+                passage_prefix=args.passage_prefix,
+            )
+        if not triplets:
+            logger.error("Không tạo được triplet nào — dừng lại (kiểm tra --hard-negative-ranks).")
+            sys.exit(1)
         train_examples = [InputExample(texts=[q, pos, neg]) for q, pos, neg in triplets]
-        loss = losses.TripletLoss(model=model)
-        logger.info("Dùng TripletLoss với %d triplet (có hard negative)", len(train_examples))
+        if args.loss == "mnrl":
+            # MultipleNegativesRankingLoss với 3 cột: cột 3 = hard negative TƯỜNG MINH, CỘNG THÊM
+            # in-batch negatives (mọi positive của câu hỏi khác trong batch). Đây là loss CHUẨN cho
+            # fine-tune retriever: dùng softmax trên cosine similarity, KHÔNG có margin nên KHÔNG
+            # thể thoái hoá kiểu TripletLoss bên dưới.
+            loss = losses.MultipleNegativesRankingLoss(model=model)
+            logger.info(
+                "Dùng MultipleNegativesRankingLoss với %d bộ (anchor, positive, hard_negative) "
+                "+ in-batch negatives. Batch càng lớn càng nhiều in-batch negative -> tín hiệu càng tốt.",
+                len(train_examples),
+            )
+        else:
+            loss = losses.TripletLoss(model=model, triplet_margin=args.triplet_margin)
+            logger.info("Dùng TripletLoss (margin=%g) với %d triplet", args.triplet_margin, len(train_examples))
+            # ⚠️ CẢNH BÁO SINH RA TỪ THẤT BẠI THẬT 2026-08-22 (9 giờ GPU đổ đi):
+            # TripletLoss mặc định dùng khoảng cách EUCLIDEAN + margin=5. Model AITeamVN có module
+            # Normalize -> mọi embedding nằm trên mặt cầu đơn vị -> khoảng cách Euclid TỐI ĐA = 2 < 5.
+            # Margin KHÔNG BAO GIỜ thoả mãn -> gradient không bao giờ tắt -> model bị đẩy vô hạn về
+            # lời giải THOÁI HOÁ: đẩy mọi negative tới ĐỐI CỰC của query, nén cả không gian 1024
+            # chiều xuống 1 TRỤC (mọi vector chỉ còn +v hoặc -v). Loss vẫn giảm đều trông rất đẹp,
+            # nhưng Recall sụp từ 0.92 xuống 0.0046 (≈ đoán ngẫu nhiên).
+            # Triệu chứng nhận biết: cos(a,b) ra ĐÚNG ±1.0000, cos trung bình với văn bản ngẫu nhiên ÂM MẠNH.
+            if _model_is_normalized(model) and args.triplet_margin > 2.0:
+                logger.error(
+                    "⚠️⚠️ DỪNG LẠI: model CÓ chuẩn hoá L2 (khoảng cách Euclid tối đa = 2) nhưng "
+                    "triplet_margin=%g > 2 -> margin KHÔNG BAO GIỜ thoả mãn -> gần như CHẮC CHẮN "
+                    "sụp đổ biểu diễn (đã xảy ra thật 2026-08-22, mất 9 giờ GPU). "
+                    "Dùng --loss mnrl (khuyến nghị) hoặc --triplet-margin 0.5.",
+                    args.triplet_margin,
+                )
+                sys.exit(1)
     else:
         train_examples = [InputExample(texts=[q, pos]) for q, pos, _, _ in pairs]
         loss = losses.MultipleNegativesRankingLoss(model=model)
@@ -286,15 +445,30 @@ def main() -> None:
 
     train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=args.batch_size)
     warmup_steps = int(len(train_dataloader) * args.epochs * 0.1)
-    logger.info("Bắt đầu fine-tune: %d epoch, batch_size=%d, warmup_steps=%d", args.epochs, args.batch_size, warmup_steps)
+    # `--fp16` TỪNG LÀ CỜ CHẾT (2026-08-22): nó được khai báo + ghi tài liệu là "bật use_amp trong
+    # model.fit()" nhưng KHÔNG dòng code nào đọc `args.fp16` - fit() chỉ đọc `args.use_amp`. Nghĩa là
+    # lần chạy dòng #12 ghi trong log là "có --fp16" THỰC TẾ đã chạy fp32. Nay nối 2 cờ lại để cả hai
+    # đều thật sự bật AMP.
+    use_amp = bool(args.use_amp or getattr(args, "fp16", False))
+    logger.info(
+        "Bắt đầu fine-tune: %d epoch, batch_size=%d, warmup_steps=%d, learning_rate=%g, use_amp=%s",
+        args.epochs, args.batch_size, warmup_steps, args.learning_rate, use_amp,
+    )
+    if args.learning_rate >= 2e-5 and args.epochs >= 2:
+        logger.warning(
+            "⚠️ learning_rate=%g VỚI %d epoch - đây ĐÚNG cấu hình đã gây catastrophic forgetting ở "
+            "dòng #12 (public 0.8922 < pretrained 0.9058). Cân nhắc --learning-rate 5e-6 --epochs 1.",
+            args.learning_rate, args.epochs,
+        )
 
     model.fit(
         train_objectives=[(train_dataloader, loss)],
         epochs=args.epochs,
         steps_per_epoch=args.steps_per_epoch,
         warmup_steps=warmup_steps,
+        optimizer_params={"lr": args.learning_rate},
         output_path=args.output_dir,
-        use_amp=args.use_amp,
+        use_amp=use_amp,
         checkpoint_path=args.checkpoint_path,
         checkpoint_save_steps=args.checkpoint_save_steps,
         checkpoint_save_total_limit=args.checkpoint_save_total_limit,
