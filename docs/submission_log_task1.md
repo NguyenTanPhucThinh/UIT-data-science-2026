@@ -4,6 +4,9 @@ Bản rút gọn (2026-08-23) — chỉ giữ các thử nghiệm chính, quyế
 dụng. Toàn bộ nhật ký chi tiết (log debug, breakdown từng bước, các bug đã sửa) được giữ trong lịch sử
 chỉnh sửa của doc này trên claude.ai nếu cần tra lại.
 
+**Các hướng CÒN LẠI đang chạy dở, chia việc cho Hoàng/Kiên/Giang, xem `docs/phan_cong_thu_nghiem_task1.md`**
+— khi 1 hướng ở đó có kết luận, kết quả sẽ được chuyển về bảng log chính bên dưới để giữ lịch sử liền mạch.
+
 ## 🏆 Cấu hình tốt nhất hiện tại
 
 **Score PUBLIC 0.9208** (ID 896875, nộp 2026-08-22) — ensemble RRF 3 nhánh: `AITeamVN/Vietnamese_Embedding`
@@ -82,6 +85,11 @@ khung chung thay vì văn bản chuyên biệt. Đã báo cáo đầy đủ cho 
 ngoài). 20 tài liệu rỗng đã được vá bằng fallback passage (số hiệu + lĩnh vực trích từ URL, không cần
 dữ liệu ngoài) — an toàn nhưng tác động đo được ~0 (chỉ chạm 3/1398 câu hỏi val).
 
+**⚠️ Đã xác nhận (2026-08-23): re-crawl lại 20 tài liệu rỗng KHÔNG được làm**, kể cả bởi Kiên với tài
+khoản Pro riêng — vẫn tính là "thu thập dữ liệu ngoài bộ dữ liệu chính thức BTC phát hành" (quy định
+mục 7), không phân biệt theo AI làm hay ai có quyền truy cập nguồn gốc. Hướng xử lý DUY NHẤT hợp lệ cho
+20 tài liệu này là fallback passage đã vá ở trên — không còn việc gì cần làm thêm cho vấn đề này.
+
 ## Hướng đã đóng (không cần thử lại trừ khi có ý tưởng mới)
 
 Fine-tune embedding (3 lần, 3 cơ chế thất bại khác nhau) · reranker mọi hình thức (4 phép thử độc lập)
@@ -109,8 +117,8 @@ trong khi lần fine-tune gần nhất đang ở -0.108) · `itdainb/PhoRanker` 
 (gated, cần Hoàng tự xác minh prefix — không to hơn v1 nhưng là kiến trúc Qwen3 + domain luật, chưa
 thử) · query expansion (PRF/RM3) cho nhánh BM25 — cổ điển, chưa thử, không cần GPU, chỉ dùng corpus
 chính thức nên hợp lệ · thử nghiệm chunking khác (kích thước/overlap) · cập nhật
-`scripts/allowed-models.md` cho harrier trong ensemble chính thức · chờ Kiên xử lý phần data-quality
-còn lại (re-crawl 20 tài liệu, xem lại GT 13 câu hỏi lương).
+`scripts/allowed-models.md` cho harrier trong ensemble chính thức · chờ Kiên xem lại GT cho 13 câu hỏi
+lương (re-crawl 20 tài liệu rỗng KHÔNG còn là việc cần làm — xem cảnh báo tuân thủ ở mục data quality).
 
 ## Ghi chú tuân thủ
 
