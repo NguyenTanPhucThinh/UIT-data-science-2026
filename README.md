@@ -62,7 +62,7 @@ For the `Core RAG`, `Embeddings`, and `Vectorstore` team members, please consult
 ## Task 2 — LegalQA
 
 The local end-to-end LegalQA pipeline uses `AITeamVN/Vi-Qwen2-1.5B-RAG` over token-budgeted
-retrieval evidence. See [`docs/legalqa_pipeline_implementation_guide.md`](docs/legalqa_pipeline_guide.md)
+retrieval evidence. See [`docs/legalqa_pipeline_guide.md`](docs/legalqa_pipeline_guide.md)
 for module contracts, setup, execution, evaluation, validation, and final submission packaging.
 
 *Maintainer for Data & Utilities: Đoàn Quốc Kiên (Thành viên 1)*

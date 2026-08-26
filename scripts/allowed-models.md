@@ -1,5 +1,10 @@
 # Các model sử dụng trong cuộc thi (UIT-DSC 2026, Task 1 LegalIR)
 
+> **Cập nhật cấu hình chạy thật 2026-08-25:** phần lịch sử bên dưới được giữ để truy vết thí
+> nghiệm. Cấu hình tốt nhất hiện tại là AITeamVN v1 (1.0) + VietLegal Harrier (0.2) + BM25 (0.1),
+> `rrf_k=60`, không reranker, public score **0.9208**. Xem `docs/submission_log_task1.md` và
+> `docs/allowed-models.md`; không dùng tiêu đề “0.9173” bên dưới làm cấu hình Task 2.
+
 > Cập nhật 2026-08-15. Ràng buộc theo `quy-dinh-cuoc-thi-task1.md` mục 5-6: **tổng tham số toàn bộ
 > pipeline phải dưới 4 tỷ (4B)**, chỉ mã nguồn mở tự vận hành (không API), giấy phép nghiên
 > cứu/giáo dục/phi thương mại được chấp nhận. **Muốn bổ sung model mới ngoài danh sách này (kể cả

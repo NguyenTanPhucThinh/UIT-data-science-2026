@@ -1,13 +1,9 @@
 # =============================================================================
-# TAO SUBMISSION PUBLIC bang ENSEMBLE v1 + harrier + BM25 (2026-08-21)
+# TAO SUBMISSION PUBLIC bang ENSEMBLE v1 + harrier + BM25 (cap nhat 2026-08-25)
 #
 # Cau hinh DA CHOT tu sweep tren val_split_20 (KHONG sweep lai o day - public khong co dap an):
-#     harrier = 0.8, rrf_k = 8, bm25 = 0.1, v1 = 1.0, dense/bm25-top-n = 100, gop = max
-#     Recall LOCAL 0.9360 (baseline #11b = 0.9295, delta +0.0065)
-#
-# Chon w=0.8/k=8 vi day la diem NAM GIUA vung phang (du 9 o lan can, khong cham bien luoi,
-# gia tri o ~ trung binh lan can) - KHONG lay o max 0.9394 (w=1.0,k=8) vi do la dinh nhon,
-# vot +0.0024 so voi hang xom => nhieu kha nang overfit vao val.
+#     harrier = 0.2, rrf_k = 60, bm25 = 0.1, v1 = 1.0, dense/bm25-top-n = 100, gop = max
+#     Score PUBLIC da xac nhan = 0.9208 (submission log dong #21).
 #
 # Chay tu thu muc GOC:  .\scripts\run_ensemble_public.ps1
 # =============================================================================
@@ -44,9 +40,9 @@ python -m src.evaluation.ensemble_fusion fuse --no-eval `
     --rank v1=outputs/cache/ranks_public_v1.npz `
     --rank harrier=outputs/cache/ranks_public_harrier.npz `
     --rank bm25=outputs/cache/ranks_public_bm25.npz `
-    --weights harrier=0.8 `
+    --weights harrier=0.2 `
     --weights bm25=0.1 `
-    --rrf-k 8 `
+    --rrf-k 60 `
     --save-best-predictions outputs/predictions/submission_ensemble.json
 
 Write-Host "`n=== KIEM TRA DINH DANG truoc khi nop ===" -ForegroundColor Cyan
@@ -69,5 +65,4 @@ Write-Host ""
 Write-Host "XONG. File nop: $zip" -ForegroundColor Green
 Write-Host "  (ben trong chi chua duy nhat submission.json - dung quy dinh muc 2)" -ForegroundColor Green
 Write-Host ""
-Write-Host "Ky vong: Score PUBLIC ~0.923 (local 0.9360, khoang cach local->public lich su ~-0.013)." -ForegroundColor Yellow
-Write-Host "Moc so sanh: ban chinh thuc hien tai (dong #11b) = 0.9173." -ForegroundColor Yellow
+Write-Host "Cau hinh da xac nhan PUBLIC 0.9208 (dong #21)." -ForegroundColor Yellow
