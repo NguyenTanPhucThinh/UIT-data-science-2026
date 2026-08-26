@@ -130,14 +130,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--questions", required=True)
     parser.add_argument("--output", required=True, help="Final Task 2 submission JSON")
     parser.add_argument("--chunks", default="data/processed/chunks_corpus.jsonl")
+    parser.add_argument("--embedding-model", default="AITeamVN/Vietnamese_Embedding")
     parser.add_argument(
-        "--embedding-model", default="models/vietnamese-legal-embedding-ft-full"
+        "--reranker-model",
+        default="none",
+        help="Optional single-retriever reranker; use 'none' to disable it",
     )
-    parser.add_argument("--reranker-model", default="models/reranker-ft-full")
     parser.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
     parser.add_argument(
         "--embedding-cache",
-        default="outputs/cache/chunks_corpus_embeddings__ft_full.npz",
+        default="outputs/cache/embcompare_aiteamvn.npz",
     )
     parser.add_argument("--retrieval-context-output", default=None)
     parser.add_argument(
@@ -160,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dense-top-n", type=int, default=100)
     parser.add_argument("--bm25-top-n", type=int, default=100)
     parser.add_argument("--rrf-k", type=int, default=60)
+    parser.add_argument("--bm25-weight", type=float, default=0.1)
     parser.add_argument("--candidate-docs", type=int, default=20)
     parser.add_argument("--embedding-batch-size", type=int, default=64)
     parser.add_argument("--question-batch-size", type=int, default=64)
@@ -169,8 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-documents", type=int, default=5)
     parser.add_argument("--max-chunks-per-document", type=int, default=3)
     parser.add_argument("--neighbor-window", type=int, default=1)
-    parser.add_argument("--query-prefix", default="query: ")
-    parser.add_argument("--passage-prefix", default="passage: ")
+    parser.add_argument("--query-prefix", default="")
+    parser.add_argument("--passage-prefix", default="")
+    parser.add_argument("--max-seq-length", type=int, default=2048)
+    parser.add_argument("--bm25-fast", action="store_true")
     parser.add_argument("--device", default="auto", help="Retrieval device")
     parser.add_argument("--llm-device", default="auto")
     parser.add_argument(
@@ -224,6 +229,7 @@ def main() -> None:
         device = resolve_device(args.device)
         logger.info("Loading retrieval embedding model: %s", args.embedding_model)
         embedding_model = SentenceTransformer(args.embedding_model, device=device)
+        embedding_model.max_seq_length = args.max_seq_length
         if device == "cuda":
             try:
                 embedding_model = embedding_model.half()
@@ -231,8 +237,12 @@ def main() -> None:
                 logger.warning(
                     "Could not cast embedding model to fp16; continuing with original dtype"
                 )
-        logger.info("Loading retrieval reranker: %s", args.reranker_model)
-        reranker_model = CrossEncoder(args.reranker_model, num_labels=1, device=device)
+        reranker_model = None
+        if args.reranker_model and args.reranker_model.strip().lower() != "none":
+            logger.info("Loading retrieval reranker: %s", args.reranker_model)
+            reranker_model = CrossEncoder(args.reranker_model, num_labels=1, device=device)
+        else:
+            logger.info("Retrieval reranker disabled")
 
         chunk_embeddings = encode_chunks(
             embedding_model,
@@ -254,9 +264,11 @@ def main() -> None:
             dense_top_n=args.dense_top_n,
             bm25_top_n=args.bm25_top_n,
             rrf_k=args.rrf_k,
+            bm25_weight=args.bm25_weight,
             candidate_docs=args.candidate_docs,
             question_batch_size=args.question_batch_size,
             query_prefix=args.query_prefix,
+            bm25_fast=args.bm25_fast,
             evidence_output=evidence_by_qid,
         )
 

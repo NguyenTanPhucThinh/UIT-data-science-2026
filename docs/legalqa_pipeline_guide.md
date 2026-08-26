@@ -1,313 +1,496 @@
-# Guidance for pipeline Task 2 — LegalQA
+# Hướng dẫn pipeline Task 2 — LegalQA
 
-## 1. Pipeline hoàn chỉnh
+Tài liệu này mô tả pipeline chính thức hiện tại sau khi nối LegalIR tốt nhất của Task 1 vào
+`AITeamVN/Vi-Qwen2-1.5B-RAG` để sinh submission Task 2. Điểm BTC tăng từ `0.2807` lên `0.3450`: tăng `0.0643`, tương đương khoảng `22,9%` so với baseline cũ.
+
+## 1. Pipeline đang sử dụng
 
 ```text
-File câu hỏi Task 2
-  -> load + chuẩn hóa câu hỏi
-  -> dense retrieval (embedding fine-tune)
-  -> BM25 retrieval
-  -> RRF ở cấp chunk
-  -> gom chunk thành candidate document
-  -> reranker fine-tune
-  -> evidence chunk có provenance/score
-  -> thêm chunk lân cận cùng document
-  -> cắt context bằng tokenizer của Vi-Qwen2
-  -> Vi-Qwen2-1.5B-RAG sinh answer local, greedy
-  -> bỏ reasoning/XML/Markdown
-  -> cảnh báo claim pháp lý không có trong evidence
-  -> submission.json
-  -> validator
-  -> submission.zip
+public_test_2_preprocessed.jsonl
+              |
+              +--> AITeamVN/Vietnamese_Embedding (weight 1.0, top 100)
+              +--> mainguyen9/vietlegal-harrier-0.6b (weight 0.2, top 100)
+              +--> BM25 (weight 0.1, top 100)
+                              |
+                        RRF, rrf_k=60
+                              |
+                   max score chunk / document
+                              |
+             retrieval_context_ensemble.json
+                              |
+         mở rộng chunk lân cận + giới hạn token
+                              |
+                 AITeamVN/Vi-Qwen2-1.5B-RAG
+                              |
+              postprocess -> validate -> ZIP
 ```
 
-## 2. Các file/module đã tạo
+Cấu hình retrieval này đạt public score Task 1 `0.9208`. Không dùng reranker: các thử nghiệm trong
+`docs/submission_log_task1.md` cho thấy reranker làm giảm kết quả. Tổng model của retrieval khoảng
+1,16B tham số; cộng LLM 1,5B là khoảng 2,66B.
 
-### 2.1. Package `src/qa`
+## 2. Các module và artifact
 
-| File | Input | Output | Vai trò |
+| File/module | Input | Output | Vai trò |
 |---|---|---|---|
-| `src/qa/types.py` | mapping evidence/QA | `EvidenceChunk`, `QAInput`, `QAResult` | Hợp đồng dữ liệu có type và nguồn gốc rõ ràng |
-| `src/qa/config.py` | tham số CLI/config | `LLMConfig`, `ContextConfig`, `LegalQAGenerationConfig` | Cấu hình model, context budget và decode |
-| `src/qa/prompts.py` | question + context | chat messages | Prompt tiếng Việt cố định, cấm suy đoán/XML/Markdown và tiền tố meta |
-| `src/qa/context_builder.py` | ranked evidence + toàn bộ chunk + tokenizer | context đã cắt token, danh sách evidence dùng thực tế | Mở rộng chunk lân cận, dedupe và bảo vệ context window |
-| `src/qa/generator.py` | chat messages | raw answer | Load `AITeamVN/Vi-Qwen2-1.5B-RAG` local và batch generation |
-| `src/qa/postprocess.py` | raw answer + context | clean answer + unsupported markers | Bỏ `<think>`, XML, prompt wrapper, tiền tố meta; kiểm tra số liệu/Điều luật |
-| `src/qa/pipeline.py` | `QAInput[]` + corpus chunks | `QAResult[]`, submission dict | Điều phối context → prompt → generation → cleanup |
-| `src/qa/__init__.py` | — | public package exports | API gọn cho module khác import |
+| `src/evaluation/ensemble_fusion.py rank` | model embedding, chunks, questions | `ranks_*.npz` | Encode câu hỏi và lưu top chunk của từng dense model |
+| `src/evaluation/ensemble_fusion.py rank-bm25` | chunks, questions | `ranks_task2_bm25.npz` | Sinh thứ hạng BM25 |
+| `src/evaluation/ensemble_context_for_task2.py` | ba file rank, chunks, questions | `retrieval_context_ensemble.json` | Fuse RRF, gộp chunk thành document và giữ passage đại diện |
+| `src/evaluation/run_legalqa.py` | retrieval context, chunks, LLM | `submission_raw.json`, checkpoint, diagnostics | Xây context theo token budget và sinh câu trả lời |
+| `src/qa/context_builder.py` | evidence được xếp hạng | prompt context | Mở rộng chunk lân cận, giới hạn document/chunk/token |
+| `src/qa/generator.py` | prompt messages | raw answer | Chạy LLM local, greedy decoding |
+| `src/qa/postprocess.py` | raw answer | cleaned answer | Làm sạch wrapper/preamble trong từng câu trả lời |
+| `src/evaluation/postprocess_legalqa_submission.py` | raw submission | final submission | Bỏ các tiền tố như “Dựa vào...” sau toàn pipeline |
+| `src/evaluation/validate_legalqa_submission.py` | submission và file test gốc | exit code/báo lỗi | Kiểm tra ID, schema và answer rỗng/sai wrapper |
+| `scripts/run_pipeline_task2.ps1` | toàn bộ artifact trên | JSON cuối và ZIP | Wrapper end-to-end khuyến nghị |
 
-### 2.2. Retrieval/evaluation
+### Contract retrieval context
 
-| File | Thay đổi/đầu vào | Output | Vai trò |
-|---|---|---|---|
-| `src/evaluation/full_pipeline_eval.py` | thêm `evidence_output` tùy chọn | giữ nguyên Task 1 output; thêm ranked evidence nếu caller yêu cầu | Tái sử dụng đúng retrieval đã kiểm chứng, không phá caller cũ |
-| `src/evaluation/retrieve_for_task2.py` | questions + retrieval artifacts | JSON `question + evidence` | Xuất chunk liên quan thay vì toàn văn document |
-| `src/evaluation/run_legalqa.py` | questions + chunks + 3 model | `submission.json`, context/diagnostics tùy chọn | CLI end-to-end chính thức cho Task 2 |
-| `src/evaluation/postprocess_legalqa_submission.py` | raw submission JSON | cleaned submission + report | Xóa tiền tố nói về context/tài liệu nhưng giữ căn cứ pháp lý thực chất |
-| `src/evaluation/legalqa_metrics.py` | reference/prediction strings | METEOR, ROUGE-L, per-question | Metric local với tokenizer Unicode tiếng Việt |
-| `src/evaluation/evaluate_legalqa.py` | reference JSON + prediction JSON | báo cáo console/JSON | CLI đánh giá local |
-| `src/evaluation/validate_legalqa_submission.py` | prediction + question reference | danh sách lỗi / exit code | Chặn schema sai, thiếu ID, answer rỗng, reasoning wrapper |
-| `src/evaluation/task_selection.py` | đường dẫn questions | Task 1/2 hoặc unknown | Chặn LegalQA nhận nhầm artifact Task 1 |
+Mỗi câu hỏi trong `retrieval_context_ensemble.json` có dạng:
 
-### 2.3. Test đã tạo
+```json
+{
+  "18781": {
+    "question": "Nội dung câu hỏi",
+    "document_ids": ["123", "456"],
+    "evidence": [
+      {
+        "doc_id": "123",
+        "corpus_chunk_index": 9123,
+        "chunk_id": "123_chunk_004",
+        "document_chunk_index": 4,
+        "legal_section": "Điều 10",
+        "document_name": "Tên văn bản",
+        "passage": "Nội dung bằng chứng",
+        "retrieval_rank": 1,
+        "rrf_score": 0.018,
+        "reranker_score": null
+      }
+    ]
+  }
+}
+```
 
-| File | Phạm vi |
-|---|---|
-| `tests/test_qa_context_builder.py` | neighbor expansion, khác document, token budget |
-| `tests/test_qa_postprocess.py` | strip reasoning/XML và marker grounding |
-| `tests/test_qa_pipeline.py` | orchestration với fake generator, không tải LLM |
-| `tests/test_legalqa_metrics.py` | METEOR/ROUGE-L exact, disjoint, missing prediction |
-| `tests/test_legalqa_submission.py` | schema hợp lệ và wrapper không hợp lệ |
-| `tests/test_postprocess_legalqa_submission.py` | cleanup submission, bảo toàn schema và thống kê thay đổi |
-| `tests/test_retrieval_evidence.py` | reranker giữ đúng chunk provenance/score |
-| `tests/test_task_selection.py` | mapping file Task 1/2, schema Task 2 và chặn chọn nhầm |
+File rank mới chứa cả hash nội dung câu hỏi. Module context sẽ dừng nếu dùng rank sinh từ phiên bản
+câu hỏi cũ, kể cả khi `question_id` không thay đổi.
 
-### 2.4. Script vận hành
+## 3. Yêu cầu môi trường
 
-| File | Vai trò |
-|---|---|
-| `scripts/run_pipeline_task2.ps1` | Wrapper PowerShell chạy end-to-end, validate và tùy chọn đóng ZIP |
+- Windows PowerShell, chạy từ thư mục gốc repo.
+- Python 3.10–3.12.
+- Java 8+ nếu cần chạy lại VnCoreNLP.
+- GPU NVIDIA được khuyến nghị; pipeline mặc định dùng `cuda`.
+- Nên còn ít nhất khoảng 10 GB dung lượng trống cho model và hai corpus embedding cache.
 
-## 3. Các file hiện có đã sửa
-
-| File | Nội dung sửa |
-|---|---|
-| `src/ingestion + EDA/run_phase2.py` | dùng VnCoreNLP thật; PyVi chỉ fallback theo từng dòng |
-| `src/ingestion + EDA/build_pipeline.py` | thêm `--task 1`, `--task 2`, `--task all` |
-| `src/config/task_data.py` | mapping tập raw/clean/preprocessed riêng cho hai task |
-| `src/retrieval/reranker.py` | default base reranker đổi sang `BAAI/bge-reranker-v2-m3` |
-| `requirements.txt` | thêm direct dependencies cho LLM và METEOR |
-| `docs/allowed-models.md` | đánh dấu Vi-Qwen2-1.5B-RAG là LLM Task 2 đã chọn |
-| `docs/retrieval.md` | đồng bộ reranker chính thức |
-
-
-## 5. Chuẩn bị môi trường
-
-### 5.1. Phần mềm
-
-- Python 3.10+.
-- Java 8+ cho VnCoreNLP.
-- Khuyến nghị GPU NVIDIA; CPU chạy được nhưng LLM/retrieval rất chậm.
-- Dung lượng đủ cho embedding, reranker, LLM và embedding cache.
-
-### 5.2. Cài dependency
-
-Từ thư mục gốc repo:
+Tạo và kích hoạt môi trường:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements.txt
 ```
 
-Máy NVIDIA/Windows phải kiểm tra PyTorch CUDA trước khi train:
+Cài PyTorch CUDA phù hợp trước, theo lệnh do trang PyTorch cung cấp. Sau đó:
 
 ```powershell
-python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+python -m pip install -r requirements.txt
 ```
 
-Nếu kết quả có hậu tố `+cpu`, `torch.version.cuda` là `None` hoặc giá trị cuối là `False`, cài
-wheel CUDA chính thức phù hợp. Ví dụ với driver mới hỗ trợ CUDA 13.x:
+Kiểm tra GPU:
 
 ```powershell
-python -m pip install --force-reinstall --no-deps torch==2.13.0 `
-  --index-url https://download.pytorch.org/whl/cu130
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-Sau đó lệnh kiểm tra phải trả về `torch.cuda.is_available() == True`. Wheel PyTorch đã kèm CUDA
-runtime cần thiết; thông thường không cần cài riêng CUDA Toolkit để chạy wheel.
+Kết quả cần có `True` và tên GPU. Nếu `False`, không nên chạy encode corpus hoặc generation full.
 
-Nếu PowerShell chặn activation, có thể gọi trực tiếp `.venv\Scripts\python.exe` cho các lệnh dưới đây.
+## 4. Chuẩn bị dữ liệu đúng Task 2
 
-### 5.3. Sinh processed artifacts
+Các file raw chuẩn:
 
-Đặt các file câu hỏi tương ứng trong `data/raw/` và chọn rõ task cần xử lý; chỉ `--task all`
-yêu cầu đủ cả bốn file:
+```text
+data/raw/train-2.json
+data/raw/public-official-2.json
+data/raw/selected-contexts/context_*.json
+```
+
+Chạy:
 
 ```powershell
-# Task 1: train.json + public-official.json
-python "src/ingestion + EDA/build_pipeline.py" --task 1
-
-# Task 2: train-2.json + public-official-2.json
 python "src/ingestion + EDA/build_pipeline.py" --task 2
+```
 
-# Sinh artifact câu hỏi cho cả hai task
+Các artifact bắt buộc sau bước này:
+
+```text
+data/processed/chunks_corpus.jsonl
+data/processed/public_test_2_preprocessed.jsonl
+data/processed/train_2_preprocessed.jsonl
+```
+
+Nếu cả dữ liệu Task 1 và Task 2 cùng thay đổi, dùng:
+
+```powershell
 python "src/ingestion + EDA/build_pipeline.py" --task all
 ```
 
+Pipeline ghi đè có kiểm soát các file `data/processed`; không cần xóa chúng trước khi chạy lại.
 
-Mapping output câu hỏi:
+## 5. Tải và khóa model
 
-| Task | Raw public | Processed public |
-|---|---|---|
-| Task 1 | `data/raw/public-official.json` | `data/processed/public_test_preprocessed.jsonl` |
-| Task 2 | `data/raw/public-official-2.json` | `data/processed/public_test_2_preprocessed.jsonl` |
+### Cách đơn giản
 
-`corpus.jsonl`, `corpus_preprocessed.jsonl` và `chunks_corpus.jsonl` dùng chung cho hai task.
+Không cần tải thủ công. Lần chạy online đầu tiên, `sentence-transformers`/`transformers` sẽ tải:
 
-Không cần xóa trước `corpus*.jsonl`, `chunks_corpus.jsonl` hoặc các file question JSONL; pipeline
-sẽ ghi đè chúng. Nhưng nếu `chunks_corpus.jsonl`, tokenizer, embedding model hoặc prefix thay đổi,
-phải bỏ/tạo lại mọi vector artifact phụ thuộc corpus:
+- `AITeamVN/Vietnamese_Embedding`
+- `mainguyen9/vietlegal-harrier-0.6b`
+- `AITeamVN/Vi-Qwen2-1.5B-RAG`
 
-```text
-outputs/cache/*.npz
-embeddings/corpus_embeddings.npy
-embeddings/metadata.jsonl
-vectorstore/corpus.index
-```
+Không truyền `-LocalFilesOnly` trong lần đầu.
 
-Không được trộn artifact PyVi cũ với query VnCoreNLP mới. `run_legalqa.py` hiện dùng cache NPZ
-truyền qua `--embedding-cache`; nó không tự đọc `corpus_embeddings.npy` hoặc `corpus.index`.
-Do đó hai file này không cần thiết cho lệnh Task 2 ở mục 8, nhưng phải được tái tạo trước khi dùng
-pipeline module trong `src/retrieval/`.
+### Cách khóa model để tái lập/offline
 
-## 6. Chuẩn bị model retrieval
-
-Đây là bước bắt buộc trước mục 8. `run_pipeline_task2.ps1` chỉ điều phối inference; script không
-tự fine-tune hai model retrieval. Nếu dùng đường dẫn local mặc định mà checkpoint chưa tồn tại,
-wrapper sẽ dừng sớm và chỉ rõ model còn thiếu.
-
-CLI mặc định dùng hai checkpoint local tốt nhất:
-
-```text
-models/vietnamese-legal-embedding-ft-full
-models/reranker-ft-full
-```
-
-Nếu hai thư mục này chưa tồn tại, có hai lựa chọn.
-
-### Lựa chọn A — train lại checkpoint chính thức
+Lấy commit SHA hiện tại:
 
 ```powershell
-python -m src.training.finetune_embedding `
-  --base-model bqbbao6/VN_legal_embedding_512 `
-  --train-json data/raw/train.json `
-  --corpus data/raw/selected-contexts `
-  --output-dir models/vietnamese-legal-embedding-ft-full `
-  --device cuda `
-  --use-amp `
-  --batch-size 8 `
-  --checkpoint-path outputs/checkpoints/embedding-ft-full `
-  --checkpoint-save-steps 100
-
-python -m src.training.finetune_reranker `
-  --base-model BAAI/bge-reranker-v2-m3 `
-  --train-json data/raw/train.json `
-  --corpus data/raw/selected-contexts `
-  --output-dir models/reranker-ft-full `
-  --hard-negatives `
-  --hard-negative-embedding-model models/vietnamese-legal-embedding-ft-full `
-  --hard-negative-top-k 1 `
-  --epochs 1 `
-  --batch-size 4 `
-  --device cuda
+python -c "from huggingface_hub import HfApi; api=HfApi(); [print(x, api.model_info(x).sha) for x in ['AITeamVN/Vietnamese_Embedding','mainguyen9/vietlegal-harrier-0.6b','AITeamVN/Vi-Qwen2-1.5B-RAG']]"
 ```
 
-Nếu embedding training bị gián đoạn sau khi đã có checkpoint, chạy lại nguyên lệnh embedding
-ở trên và thêm `--resume-from-checkpoint`. Không resume từ lần chạy CPU cũ nếu chưa tồn tại
-`outputs/checkpoints/embedding-ft-full`. Với GPU 8 GB, cấu hình khởi đầu an toàn là
-`--batch-size 8 --use-amp`; chỉ tăng batch sau khi smoke test không OOM.
-
-### Lựa chọn B — smoke test với pretrained model
-
-Thêm vào lệnh chạy LegalQA:
-
-```text
---embedding-model bqbbao6/VN_legal_embedding_512
---reranker-model BAAI/bge-reranker-v2-m3
---embedding-cache outputs/cache/chunks_corpus_embeddings__pretrained.npz
-```
-
-Lựa chọn B chạy được end-to-end nhưng chất lượng dự kiến thấp hơn checkpoint fine-tune.
-
-Có thể smoke test trực tiếp bằng wrapper và cache riêng, không làm ảnh hưởng cache fine-tune:
+Thay `<SHA_...>` bằng SHA vừa nhận rồi tải snapshot vào repo local:
 
 ```powershell
-.\scripts\run_pipeline_task2.ps1 `
-  -EmbeddingModel "bqbbao6/VN_legal_embedding_512" `
-  -RerankerModel "BAAI/bge-reranker-v2-m3" `
-  -EmbeddingCache "outputs/cache/chunks_corpus_embeddings__pretrained.npz" `
+python -c "from huggingface_hub import snapshot_download; snapshot_download('AITeamVN/Vietnamese_Embedding', revision='<SHA_AITEAMVN>', local_dir='models/Vietnamese_Embedding')"
+
+python -c "from huggingface_hub import snapshot_download; snapshot_download('mainguyen9/vietlegal-harrier-0.6b', revision='<SHA_HARRIER>', local_dir='models/vietlegal-harrier-0.6b')"
+
+python -c "from huggingface_hub import snapshot_download; snapshot_download('AITeamVN/Vi-Qwen2-1.5B-RAG', revision='<SHA_LLM>', local_dir='models/Vi-Qwen2-1.5B-RAG')"
+```
+
+Không commit các thư mục model lên Git. Ghi ba SHA vào model card/submission log của nhóm.
+
+## 6. Chạy full pipeline lần đầu
+
+### Dùng model ID Hugging Face
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File scripts\run_pipeline_task2.ps1 `
+  -RebuildRetrieval `
+  -RebuildGeneration `
   -Package
 ```
 
-Trước khi chạy cấu hình chính thức, kiểm tra hai checkpoint local:
+### Dùng model đã khóa trong `models/`
 
 ```powershell
-Test-Path models/vietnamese-legal-embedding-ft-full
-Test-Path models/reranker-ft-full
+powershell -ExecutionPolicy Bypass `
+  -File scripts\run_pipeline_task2.ps1 `
+  -AnchorModel "models/Vietnamese_Embedding" `
+  -HarrierModel "models/vietlegal-harrier-0.6b" `
+  -LlmModel "models/Vi-Qwen2-1.5B-RAG" `
+  -LocalFilesOnly `
+  -RebuildRetrieval `
+  -RebuildGeneration `
+  -Package
 ```
 
-Cả hai phải trả về `True`. `corpus_embeddings.npy` và `corpus.index` không thay thế hai thư mục
-checkpoint: chúng chỉ chứa vector/index corpus, không chứa encoder để nhúng câu hỏi hoặc model
-cross-encoder để rerank.
+Wrapper thực hiện tuần tự để không giữ hai embedding model trên GPU cùng lúc:
 
-## 7. Tải LLM Task 2
+1. Encode/cache corpus và rank bằng AITeamVN.
+2. Encode/cache corpus và rank bằng Harrier.
+3. Rank BM25.
+4. Fuse RRF và tạo evidence.
+5. Sinh câu trả lời bằng LLM; ghi checkpoint sau từng câu.
+6. Hậu xử lý, validate và đóng ZIP.
 
-Model đã chọn:
+Không chạy ba nhánh retrieval song song: RAM/VRAM đỉnh sẽ tăng mạnh.
+
+Nếu thiếu VRAM khi encode, giảm batch:
+
+```powershell
+.\scripts\run_pipeline_task2.ps1 `
+  -EmbeddingBatchSize 16 `
+  -QuestionBatchSize 16 `
+  -RebuildRetrieval `
+  -RebuildGeneration `
+  -Package
+```
+
+## 7. Chạy lại và resume
+
+### Tiến trình LLM bị dừng giữa chừng
+
+Chạy lại cùng lệnh, không thêm cờ rebuild:
+
+```powershell
+.\scripts\run_pipeline_task2.ps1 -LocalFilesOnly -Package
+```
+
+Wrapper tái sử dụng rank/context và đọc:
 
 ```text
-AITeamVN/Vi-Qwen2-1.5B-RAG
+outputs/task2/generation_checkpoint_ensemble.jsonl
 ```
 
-Lần chạy đầu, `transformers` tải model về Hugging Face cache. Sau khi tải xong, chạy lại với `--local-files-only` để bảo đảm không có network call.
+để chỉ sinh các câu còn thiếu.
 
-Khuyến nghị trước khi submit:
-
-1. Ghi lại model revision/commit hash.
-2. Đo số tham số từ checkpoint thực tế.
-3. Nếu cần môi trường hoàn toàn portable, copy snapshot checkpoint vào `models/Vi-Qwen2-1.5B-RAG` và truyền đường dẫn local cho `--llm-model`.
-
-## 8. Chạy pipeline hoàn chỉnh
-
-### 8.0. Wrapper PowerShell
-
-Chỉ chạy mục này sau khi hai lệnh `Test-Path` ở mục 6 đều trả về `True` (hoặc đã chủ động chọn
-cặp pretrained theo cách B, mục 6).
+### Cập nhật `train-2.json` hoặc `public-official-2.json`
 
 ```powershell
-.\scripts\run_pipeline_task2.ps1 -Package
+python "src/ingestion + EDA/build_pipeline.py" --task 2
+
+.\scripts\run_pipeline_task2.ps1 `
+  -RebuildRetrieval `
+  -RebuildGeneration `
+  -Package
 ```
 
-Nếu PowerShell chặn script bởi Execution Policy, dùng:
+`-RebuildRetrieval` ghi lại ba rank và retrieval context. Wrapper tự không resume checkpoint cũ.
+
+### Corpus chunks hoặc model retrieval thay đổi
+
+Nếu `selected-contexts`, logic chunking, model dense, prefix hoặc max sequence length thay đổi, cache
+embedding cũ không còn hợp lệ. Chạy:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_pipeline_task2.ps1 -Package
+.\scripts\run_pipeline_task2.ps1 `
+  -RebuildEmbeddingCaches `
+  -RebuildGeneration `
+  -Package
 ```
 
-Wrapper mặc định dùng `data/processed/public_test_2_preprocessed.jsonl` và đối chiếu ID với
-`data/raw/public-official-2.json`. Với private test hoặc tên file khác, truyền lại `-Questions` và
-`-QuestionReferenceJson` tương ứng. Câu trả lời được ghi sau từng câu vào
-`outputs/task2/generation_checkpoint.jsonl`; chạy lại cùng wrapper sẽ tự resume các câu còn thiếu.
-Sau generation, wrapper giữ bản gốc tại `submission_raw.json`, xóa tiền tố meta thành
-`submission.json`, validate bản đã làm sạch rồi mới tạo ZIP. 
+Cờ này encode lại cả hai corpus cache, đồng thời tự rebuild rank/context. Đây là bước rất tốn thời
+gian; không cần dùng khi chỉ thay file câu hỏi.
 
-Nếu chạy trực tiếp CLI thay vì wrapper, hậu xử lý submission bằng:
+### Chỉ thay prompt/generation
+
+Không cần encode/rank lại:
 
 ```powershell
-python -m src.evaluation.postprocess_legalqa_submission `
-  --input outputs/task2/submission_raw.json `
-  --output outputs/task2/submission.json `
-  --report outputs/task2/postprocess_report.json
+.\scripts\run_pipeline_task2.ps1 -RebuildGeneration -LocalFilesOnly -Package
 ```
 
-Luôn validate và đóng ZIP từ
-`submission.json`, không dùng `submission_raw.json` để nộp.
-
-
-## 9. Debug retrieval
-
-### 9.1 Evidence
+### Chỉ muốn đóng gói lại file đã có
 
 ```powershell
-python -m src.evaluation.retrieve_for_task2 `
-  --questions data/processed/public_test_2_preprocessed.jsonl `
-  --output outputs/task2/evidence.json `
-  --top-k 5
+python -m src.evaluation.validate_legalqa_submission `
+  --predictions outputs/task2/submission.json `
+  --questions data/raw/public-official-2.json
+
+Compress-Archive `
+  -Path outputs/task2/package/submission.json `
+  -DestinationPath outputs/task2/submission.zip `
+  -Force
 ```
 
-Output này dùng để kiểm tra document/chunk/section trước khi LLM sinh. CLI end-to-end vẫn là cách chính để tạo submission; script evidence không tự sinh answer.
+## 8. Kiểm tra submission
 
-### 9.2 Generation
+Lệnh validate phải in:
 
-Hiện generation được tích hợp trong `run_legalqa.py` để bảo đảm cùng contract và tokenizer budget. Nếu cần vận hành tách process hoàn toàn, nên thêm một CLI generation-only đọc `evidence.json`; không nên tự ghép full document bằng script ngoài.
+```text
+Task 2 submission is valid
+```
+
+Submission JSON đúng có dạng:
+
+```json
+{
+  "question_id": {
+    "answer": "Câu trả lời pháp luật"
+  }
+}
+```
+
+Mỗi item chỉ được có trường `answer`. Validator còn kiểm tra thiếu/thừa question ID, answer rỗng,
+code fence và các wrapper như `<think>`.
+
+Kiểm tra nội dung ZIP:
+
+```powershell
+tar -tf outputs/task2/submission.zip
+```
+
+ZIP phải chứa đúng file `submission.json`, không chứa thêm thư mục cha.
+
+## 9. Xử lý lỗi thường gặp
+
+### `Rank source ... is stale`
+
+Question ID giống nhưng nội dung câu hỏi đã đổi. Chạy lại với:
+
+```powershell
+.\scripts\run_pipeline_task2.ps1 -RebuildRetrieval -RebuildGeneration -Package
+```
+
+### `RepositoryNotFoundError`, lỗi mạng hoặc model chưa có cache
+
+Không dùng `-LocalFilesOnly` ở lần đầu; kiểm tra kết nối Hugging Face. Hoặc tải snapshot theo mục 5
+và truyền ba đường dẫn local.
+
+### CUDA out of memory khi retrieval
+
+Giảm `-EmbeddingBatchSize` và `-QuestionBatchSize` xuống 16 hoặc 8. Không chạy hai rank dense cùng
+lúc. Nếu lỗi xảy ra ở LLM, giữ `-AnswerBatchSize 1`.
+
+### Warning `unsupported legal markers`
+
+Đây là cảnh báo chống hallucination: câu trả lời nhắc một điều luật không xuất hiện trong evidence.
+Pipeline vẫn tiếp tục và lưu checkpoint. Xem `diagnostics_ensemble.json`; không tự động xóa điều luật
+vì có thể nội dung đúng nhưng evidence bị cắt.
+
+### Câu trả lời thường mở đầu bằng “Dựa vào...”
+
+Prompt hiện đã yêu cầu trả lời trực tiếp. Bước postprocess vẫn chạy như lớp bảo hiểm và báo số câu đã
+sửa trong `postprocess_report_ensemble.json`.
+
+### Wrapper đang resume nhưng muốn sinh lại
+
+Dùng `-RebuildGeneration`. Không cần xóa checkpoint thủ công.
+
+## 10. Mốc kết quả Task 2
+
+| Phiên bản | Retrieval | Generation | Điểm BTC | Chênh lệch |
+|---|---|---|---:|---:|
+| Baseline cũ | Embedding/reranker cũ | `AITeamVN/Vi-Qwen2-1.5B-RAG` | `0.2807` | — |
+| Pipeline hiện tại | AITeamVN `1.0` + Harrier `0.2` + BM25 `0.1`, RRF `k=60`, không reranker | `AITeamVN/Vi-Qwen2-1.5B-RAG` | **`0.3450`** | **`+0.0643`** |
+
+Kết quả này xác nhận chất lượng retrieval/evidence ảnh hưởng trực tiếp và đáng kể đến Task 2. Tuy
+nhiên, không nên mặc định rằng cấu hình tối ưu Recall@5 của Task 1 cũng là cấu hình tối ưu cho metric
+sinh câu trả lời. Các thử nghiệm tiếp theo phải được đánh giá end-to-end trên dữ liệu Task 2.
+
+## 11. Hướng thử nghiệm tiếp theo cho Task 2
+
+
+### 11.1. Nhiều evidence chunk trong cùng document
+
+Pipeline hiện tại giữ chunk có RRF score cao nhất của mỗi document, sau đó lấy chunk lân cận. Cách
+này có thể bỏ sót điều kiện, ngoại lệ hoặc mức xử phạt nằm ở một điều khác nhưng không nằm sát chunk
+đại diện.
+
+Nên so sánh:
+
+1. `1 chunk tốt nhất + neighbor_window=1` — baseline hiện tại.
+2. Top 2 chunk RRF độc lập trong mỗi document, không yêu cầu liền kề.
+3. Top 3 chunk độc lập, có loại trùng nội dung.
+4. MMR/diversity: ưu tiên chunk liên quan nhưng không lặp lại cùng một đoạn luật.
+
+Giữ nguyên top document và LLM trong thí nghiệm này để đo riêng tác động của evidence selection. Đây
+là hướng ưu tiên cao nhất vì không phải encode lại corpus hoặc đổi model.
+
+### 11.2. Sweep context budget và độ dài câu trả lời
+
+Từ cùng một `retrieval_context_ensemble.json`, thử lưới nhỏ:
+
+| Tham số | Giá trị nên thử |
+|---|---|
+| `max_documents` | `3`, `5`, `8` |
+| `max_chunks_per_document` | `1`, `2`, `3` |
+| `neighbor_window` | `0`, `1` |
+| `max_context_tokens` | `2048`, `3072`, `4096`, `6000` |
+| `max_new_tokens` | `192`, `256`, `384`, `512` |
+
+Không sweep toàn bộ tích Descartes. Bắt đầu từ baseline và đổi từng trục. Metric overlap thường có
+thể giảm khi answer chứa quá nhiều thông tin đúng nhưng không xuất hiện trong đáp án tham chiếu, nên
+độ dài lớn hơn không mặc định tốt hơn.
+
+Các thử nghiệm này chỉ cần sinh lại answer; không dùng `-RebuildRetrieval`:
+
+```powershell
+.\scripts\run_pipeline_task2.ps1 -RebuildGeneration -LocalFilesOnly -Package
+```
+
+Muốn sweep thuận tiện hơn cần đưa các giá trị context/generation hiện đang cố định trong wrapper
+thành tham số PowerShell và dùng output/checkpoint riêng cho từng cấu hình.
+
+### 11.3. Query-adaptive fusion
+
+Trọng số hiện tại cố định cho mọi câu hỏi. Có thể route theo đặc điểm câu hỏi mà không thêm model:
+
+- Có số hiệu văn bản, `Điều`, `Khoản`, `Điểm`: tăng BM25.
+- Câu hỏi tình huống dài: giữ AITeamVN làm anchor mạnh.
+- Câu hỏi ngắn, thuần thuật ngữ pháp lý: tăng nhẹ Harrier.
+- Câu hỏi chứa trích dẫn chính xác: thêm exact-match citation retrieval trước RRF.
+
+Bắt đầu bằng rule-based router trên validation. Nếu có lợi ổn định, mới huấn luyện classifier nhỏ để
+chọn profile trọng số. Không chèn cưỡng bức document vào top kết quả như các thử nghiệm citation/entity
+injection trước đây đã thất bại ở Task 1.
+
+Hai corpus embedding cache và ba file rank hiện có vẫn tái sử dụng được; đổi trọng số RRF không cần
+encode lại Harrier. Vì Harrier mất khoảng 10 giờ cho lần tạo cache đầu, tuyệt đối không xóa cache khi
+chỉ sweep fusion.
+
+### 11.4. Cải thiện prompt và answer style
+
+Thử các prompt yêu cầu:
+
+- Trả lời trực tiếp, không nhắc “ngữ cảnh” hoặc “tài liệu được cung cấp”.
+- Nêu căn cứ pháp lý chỉ khi evidence có căn cứ đó.
+- Ưu tiên câu trả lời ngắn gần phong cách đáp án train.
+- Không suy luận thêm khi evidence thiếu; trả lời phần có thể xác nhận.
+- Tách rõ kết luận và điều kiện/ngoại lệ nhưng không lặp lại câu hỏi.
+
+Đánh giá riêng prompt trên cùng context và cùng decode greedy. Chỉ sau khi chốt prompt mới thử thay
+decoding; thay prompt và decoding cùng lúc sẽ không xác định được nguồn cải thiện.
+
+### Fine-tune LLM bằng LoRA/QLoRA
+
+Sau khi có validation đáng tin cậy, có thể tạo cặp huấn luyện:
+
+```text
+question + retrieval evidence -> answer chuẩn trong train-2
+```
+
+Ưu tiên QLoRA 4-bit hoặc LoRA vì GPU laptop 8 GB không phù hợp full fine-tune 1.5B với context dài.
+Bắt đầu 1 epoch, learning rate nhỏ và early stopping. Phải sinh retrieval context cho train/validation
+bằng cùng cấu hình production để tránh lệch phân phối khi inference.
+
+Rủi ro chính là overfit và làm answer dài hơn đáp án tham chiếu. Không fine-tune trước khi baseline
+prompt/context được đo đầy đủ, nếu không sẽ khó biết cải thiện đến từ retrieval hay LLM.
+
+### 11.6. Multi-resolution retrieval
+
+Tạo thêm biểu diễn ở nhiều mức:
+
+- Chunk cấp Điều ngắn.
+- Chunk hiện tại.
+- Window gồm nhiều Điều liên tiếp.
+- Tiêu đề văn bản + chương/mục + nội dung điều.
+
+Fuse rank của các mức rồi chỉ đưa evidence không trùng vào LLM. Chunk ngắn giúp tìm đúng quy định;
+window dài giữ điều kiện và ngoại lệ. Hướng này có tiềm năng nhưng phải xây và encode index mới nên
+chi phí cao hơn các ưu tiên 1–5.
+
+### 11.7. Peak supervision cho retrieval từ `train-2`
+
+Task 2 không có document label trực tiếp nhưng answer chuẩn thường chứa số hiệu, tên văn bản hoặc
+`Điều/Khoản`. Có thể trích các marker này để tạo positive document/chunk yếu, sau đó:
+
+- Đánh giá recall evidence trên tập weak-label.
+- Học query router hoặc trọng số fusion.
+- Fine-tune nhẹ retriever với learning rate thấp và validation nghiêm ngặt.
+
+Không fine-tune lại AITeamVN theo cơ chế cũ: thí nghiệm Task 1 đã cho thấy catastrophic forgetting.
+Weak supervision chỉ nên dùng sau khi xác nhận label trích xuất có độ chính xác cao.
+
+### Hướng ưu tiên thấp hoặc chưa nên lặp lại
+
+- Reranker thay thế toàn bộ thứ hạng RRF.
+- Fine-tune AITeamVN theo công thức Task 1 cũ.
+- Tăng mạnh trọng số Harrier chỉ vì local score.
+- Dedup/backfill, entity boost hoặc citation injection toàn cục.
+- Đổi LLM trước khi đo xong prompt/context trên model hiện tại.
+- Sampling/self-consistency nhiều lần cho toàn bộ test khi chưa chứng minh lợi ích trên validation.
+
+### Thứ tự triển khai đề xuất
+
+1. Tạo split và báo cáo validation Task 2 cố định.
+2. Thử top 2–3 evidence chunk độc lập trong mỗi document.
+3. Sweep nhỏ context budget và `max_new_tokens`.
+4. Thử query-adaptive fusion bằng rank cache hiện có.
+5. Chốt prompt trả lời ngắn, grounded.
+6. Fine-tune QLoRA nếu các bước không-train đã bão hòa.
+7. Chỉ sau đó mới xây multi-resolution index hoặc đổi model.
+
+Mục tiêu gần nhất hợp lý là cải thiện `0.3450` bằng evidence selection và prompt/context trước. Hai
+hướng này rẻ hơn nhiều so với encode lại Harrier hoặc fine-tune LLM, đồng thời giúp xác định rõ nút
+thắt hiện nằm ở retrieval, context construction hay generation.

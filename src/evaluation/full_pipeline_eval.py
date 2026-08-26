@@ -231,6 +231,7 @@ def load_questions(questions_path: str) -> List[dict]:
 def encode_chunks(
     model, chunks: List[dict], batch_size: int, cache_path: Optional[str] = None, passage_prefix: str = "",
     passage_prompt_name: Optional[str] = None,
+    force_reencode: bool = False,
 ):
     """LƯU Ý: nếu đổi `passage_prefix`/`passage_prompt_name` giữa các lần chạy, XÓA cache_path cũ
     trước - cache không lưu lại prefix/prompt đã dùng, dùng nhầm cache cũ sẽ cho điểm SAI.
@@ -245,7 +246,7 @@ def encode_chunks(
 
     if cache_path:
         cache_file = Path(cache_path)
-        if cache_file.exists():
+        if cache_file.exists() and not force_reencode:
             logger.info("Tìm thấy cache embedding tại %s, đang load...", cache_path)
             data = np.load(cache_file, allow_pickle=True)
             if len(data["doc_ids"]) == len(chunks):
@@ -255,6 +256,8 @@ def encode_chunks(
                 "Cache có %d chunk nhưng corpus hiện tại có %d chunk - encode lại từ đầu.",
                 len(data["doc_ids"]), len(chunks),
             )
+        elif cache_file.exists():
+            logger.info("Bỏ qua cache embedding theo yêu cầu force_reencode: %s", cache_path)
 
     encode_kwargs = dict(batch_size=batch_size, show_progress_bar=True, convert_to_numpy=True, normalize_embeddings=True)
     if passage_prompt_name:
@@ -645,6 +648,7 @@ def run_pipeline(
     collect_stages: bool = False,
     bm25_workers: int = 1,
     bm25_fast: bool = False,
+    evidence_output: Optional[Dict[str, List[dict]]] = None,
 ) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, List[str]]]]:
     """Trả về (predictions, stage_predictions).
 
@@ -680,6 +684,10 @@ def run_pipeline(
     không nhân bản qua tiến trình). Nếu bm25_fast=True, bm25_workers bị BỎ QUA (không dùng
     ProcessPoolExecutor nữa). PHẢI tự verify Recall khớp bản cũ trước khi tin dùng cho submission
     thật (xem hướng dẫn ở --bm25-fast trong CLI).
+
+    `evidence_output`: mapping tùy chọn cho Task 2. Khi được truyền, hàm điền representative
+    chunk, provenance và score của chính danh sách document cuối; các caller Task 1 không truyền
+    tham số này nên vẫn chỉ nhận prediction document ID như trước.
     """
     import numpy as np
 
@@ -753,9 +761,17 @@ def run_pipeline(
 
                 rrf_score = rrf_fuse(dense_scores, bm25_scores, doc_ids, dense_top_n, bm25_top_n, rrf_k, bm25_weight)
                 candidates = aggregate_to_documents(rrf_score, doc_ids, candidate_docs)
-                top_docs = rerank_candidates(reranker_model, q["question"], candidates, chunks, top_k)
+                ranked_details = rerank_candidate_details(
+                    reranker_model, q["question"], candidates, chunks, top_k
+                )
+                top_docs = [item["doc_id"] for item in ranked_details]
 
                 predictions[q["question_id"]] = top_docs
+                if evidence_output is not None:
+                    # Task 2 consumes the exact representative chunks selected by the
+                    # retrieval pipeline. Keeping this optional preserves every Task 1
+                    # caller and its document-ID-only output contract.
+                    evidence_output[q["question_id"]] = ranked_details
 
                 if collect_stages:
                     qid = q["question_id"]

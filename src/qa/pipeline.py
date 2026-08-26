@@ -9,6 +9,7 @@ from .generator import LocalLLMGenerator
 from .postprocess import clean_generated_answer, unsupported_legal_markers
 from .prompts import build_messages
 from .types import QAInput, QAResult
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -46,32 +47,41 @@ class LegalQAPipeline:
 
         results: list[QAResult] = []
         batch_size = self.generation_config.batch_size
-        for start in range(0, len(prepared), batch_size):
-            batch = prepared[start : start + batch_size]
-            raw_answers = self.generator.generate_batch(
-                [entry[3][0] for entry in batch], self.generation_config
-            )
-            for (item, context, prompt_tokens, payload), raw_answer in zip(
-                batch, raw_answers
-            ):
-                answer = clean_generated_answer(raw_answer)
-                unsupported = unsupported_legal_markers(answer, context)
-                if unsupported:
-                    logger.warning(
-                        "question_id=%s contains unsupported legal markers: %s",
-                        item.question_id,
-                        unsupported,
-                    )
-                result = QAResult(
-                    question_id=item.question_id,
-                    answer=answer,
-                    prompt_tokens=prompt_tokens,
-                    evidence_used=payload[1],
-                    raw_answer=raw_answer,
+        progress = tqdm(
+            total=len(prepared),
+            desc="Generating LegalQA answers",
+            unit="question",
+        )
+        try:
+            for start in range(0, len(prepared), batch_size):
+                batch = prepared[start : start + batch_size]
+                raw_answers = self.generator.generate_batch(
+                    [entry[3][0] for entry in batch], self.generation_config
                 )
-                results.append(result)
-                if on_result is not None:
-                    on_result(result)
+                for (item, context, prompt_tokens, payload), raw_answer in zip(
+                    batch, raw_answers
+                ):
+                    answer = clean_generated_answer(raw_answer)
+                    unsupported = unsupported_legal_markers(answer, context)
+                    if unsupported:
+                        logger.warning(
+                            "question_id=%s contains unsupported legal markers: %s",
+                            item.question_id,
+                            unsupported,
+                        )
+                    result = QAResult(
+                        question_id=item.question_id,
+                        answer=answer,
+                        prompt_tokens=prompt_tokens,
+                        evidence_used=payload[1],
+                        raw_answer=raw_answer,
+                    )
+                    results.append(result)
+                    if on_result is not None:
+                        on_result(result)
+                progress.update(len(batch))
+        finally:
+            progress.close()
         return results
 
     @staticmethod

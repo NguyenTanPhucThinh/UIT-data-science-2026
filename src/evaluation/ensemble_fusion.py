@@ -1,6 +1,10 @@
 """
 ENSEMBLE nhiều model embedding + BM25 bằng RRF nhiều nhánh (2026-08-21).
 
+CẤU HÌNH PRODUCTION ĐÃ XÁC NHẬN PUBLIC 2026-08-22: v1=1.0, harrier=0.2, BM25=0.1,
+rrf_k=60, top-n=100, aggregate=max, không reranker (Score PUBLIC 0.9208). Phần phân tích/sweep
+bên dưới được giữ như lịch sử dẫn tới quyết định; không dùng ví dụ harrier=0.8 làm mặc định mới.
+
 ĐỘNG LỰC (đo THẬT, không suy đoán — xem submission-log-task1.md mục "ensemble"):
 `AITeamVN/Vietnamese_Embedding` (v1, model chính thức) đang MISS 138 tài liệu GT trên val_split_20.
 Phân tích complementarity từ các file prediction CÓ SẴN cho thấy các model YẾU HƠN khi đứng riêng lại
@@ -92,6 +96,7 @@ hạn mức, nhưng PHẢI cập nhật allowed-models.md + gửi đề xuất n
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import sys
@@ -131,15 +136,31 @@ def top_n_indices(scores, top_n: int):
     return idx[np.argsort(-scores[idx])]
 
 
-def save_ranks(path: str, question_ids: Sequence[str], ranks) -> None:
+def question_text_hash(text: str) -> str:
+    """Stable fingerprint used to reject rank files created for stale question text."""
+    return hashlib.sha256(str(text).strip().encode("utf-8")).hexdigest()
+
+
+def save_ranks(
+    path: str,
+    question_ids: Sequence[str],
+    ranks,
+    question_texts: Optional[Sequence[str]] = None,
+) -> None:
     import numpy as np
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        question_ids=np.array([str(q) for q in question_ids]),
-        ranks=ranks.astype(np.int32),
-    )
+    payload = {
+        "question_ids": np.array([str(q) for q in question_ids]),
+        "ranks": ranks.astype(np.int32),
+    }
+    if question_texts is not None:
+        if len(question_texts) != len(question_ids):
+            raise ValueError("question_texts and question_ids must have equal length")
+        payload["question_hashes"] = np.array(
+            [question_text_hash(text) for text in question_texts]
+        )
+    np.savez_compressed(path, **payload)
     print(f"Đã lưu thứ hạng: {path}  (shape={ranks.shape})")
 
 
@@ -205,6 +226,7 @@ def cmd_rank(args) -> None:
     chunk_embeddings = encode_chunks(
         model, chunks, args.batch_size, str(cache),
         passage_prefix=args.passage_prefix, passage_prompt_name=args.passage_prompt_name,
+        force_reencode=args.force_encode,
     )
     if chunk_embeddings.shape[0] != len(chunks):
         print(
@@ -234,7 +256,12 @@ def cmd_rank(args) -> None:
             qids.append(str(q["question_id"]))
         print(f"  đã xử lý {min(start + args.question_batch_size, len(questions))}/{len(questions)} câu hỏi")
 
-    save_ranks(args.out, qids, all_ranks)
+    save_ranks(
+        args.out,
+        qids,
+        all_ranks,
+        question_texts=[q["question"] for q in questions],
+    )
 
 
 def cmd_rank_reranker(args) -> None:
@@ -333,7 +360,12 @@ def cmd_rank_reranker(args) -> None:
         done += len(batch)
         print(f"  đã chấm {done}/{len(questions)} câu hỏi")
 
-    save_ranks(args.out, [str(q["question_id"]) for q in questions], all_ranks)
+    save_ranks(
+        args.out,
+        [str(q["question_id"]) for q in questions],
+        all_ranks,
+        question_texts=[q["question"] for q in questions],
+    )
 
 
 def cmd_rank_bm25(args) -> None:
@@ -362,7 +394,12 @@ def cmd_rank_bm25(args) -> None:
             qids.append(str(q["question_id"]))
         print(f"  đã xử lý {min(start + args.question_batch_size, len(questions))}/{len(questions)} câu hỏi")
 
-    save_ranks(args.out, qids, all_ranks)
+    save_ranks(
+        args.out,
+        qids,
+        all_ranks,
+        question_texts=[q["question"] for q in questions],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +662,8 @@ def main() -> None:
     p_rank.add_argument("--embedding-cache", required=True)
     p_rank.add_argument("--allow-encode", action="store_true",
                         help="Cho phép encode lại corpus nếu thiếu cache (MẶC ĐỊNH TẮT - tốn nhiều giờ GPU).")
+    p_rank.add_argument("--force-encode", action="store_true",
+                        help="Bỏ qua và ghi đè cache hiện có; dùng khi corpus/model/passage config đổi.")
     p_rank.add_argument("--batch-size", type=int, default=64)
     p_rank.add_argument("--device", default="auto")
     p_rank.add_argument("--query-prefix", default="")
