@@ -33,7 +33,8 @@ chunk→document bằng max-score, top-k=5, KHÔNG rerank, KHÔNG hậu-xử-lý
 | 20 | 08-21 | **Ensemble v1+harrier(0.8)+bm25, rrf_k=8** | 0.9360 (+0.0065, p=0.033) | 0.9160 | Local RẤT chắc (kể cả xác nhận trên holdout 5602 câu độc lập) nhưng vẫn THUA public — harrier tổng quát hoá kém hơn v1 2 lần, trọng số nặng nhập luôn điểm yếu đó |
 | **21** | 08-22 | **Ensemble v1+harrier(0.2, nhẹ tay)+bm25, rrf_k=60** | — | **0.9208** | 🏆 **BEST HIỆN TẠI.** Chọn trọng số nhẹ theo suy luận từ khoảng cách local→public của từng model, KHÔNG theo local argmax |
 | — | 08-22 | Reranker làm nguồn RRF phụ (không thay thế) — 4 biến thể reranker khác nhau | Giảm đơn điệu mọi trọng số | — | ĐÓNG DỨT ĐIỂM hướng reranker cho Task 1 (4/4 phép thử độc lập đều âm) |
-| — | 08-22/23 | Fine-tune lại v1 (2 lần: TripletLoss margin=5, rồi MultipleNegativesRankingLoss) | Sụp đổ (0.0046), rồi -0.1080 | — | 3/3 lần fine-tune AITeamVN đều thất bại (xem mục "Fine-tune" bên dưới). ĐÓNG hướng fine-tune |
+| — | 08-22/23 | Fine-tune lại v1 (2 lần: TripletLoss margin=5, rồi MultipleNegativesRankingLoss) | Sụp đổ (0.0046), rồi -0.1080 | — | 3/3 lần fine-tune AITeamVN đều thất bại (xem mục "Fine-tune" bên dưới) |
+| — | 08-27 | **Lần 4:** MNRL + lọc hard-negative theo ngưỡng cosine 0,85 (loại candidate gần trùng đáp án trước khi mining, khắc phục đúng nguyên nhân đã đo của Lần 3) | -0.1189 (quick_eval subset, cùng phép đo với Lần 3) | — | Lọc CHẠY ĐÚNG (412/6519 candidate bị loại, ~6,3%, cùng bậc độ lớn với ước tính 12,3% trước đó) nhưng Δ KHÔNG cải thiện — còn hơi tệ hơn Lần 3. Kết luận: false-negative contamination KHÔNG PHẢI nguyên nhân chính của thất bại fine-tune. **ĐÓNG HẲN hướng fine-tune (4/4 lần thất bại, 4 cơ chế khác nhau đã loại trừ)** |
 | — | 08-23 | Dedup+backfill hậu-xử-lý 27 nhóm tài liệu trùng lặp | -0.0025 đến -0.0039 (3 phép đo độc lập, đều âm) | — | ĐÓNG |
 
 ## Các phát hiện phương pháp luận quan trọng
@@ -59,18 +60,25 @@ thể. Tuy nhiên model thua khi đứng riêng vẫn có thể là nguồn bổ
 kiến trúc (harrier: Qwen decoder/last-token pooling, khác hẳn v1: XLM-R encoder) — đo bằng
 "complementarity" (% tài liệu model chính bỏ sót mà model phụ cứu được), ngưỡng >30-40% coi là đáng thử.
 
-**Fine-tune thêm AITeamVN v1 nhất quán phản tác dụng** — 3 lần thử, 3 nguyên nhân kỹ thuật khác nhau,
+**Fine-tune thêm AITeamVN v1 nhất quán phản tác dụng** — 4 lần thử, 4 giả thuyết nguyên nhân khác nhau,
 đều thất bại:
 1. Full `train.json`, LR mặc định 2e-5, 3 epoch → catastrophic forgetting (PUBLIC 0.8922 < 0.9058).
 2. TripletLoss margin=5 trên embedding đã chuẩn hoá L2 (khoảng cách Euclid tối đa chỉ 2) → gradient
    không bao giờ tắt → sụp đổ biểu diễn hoàn toàn (Recall 0.92→0.0046, 9 giờ GPU mất trắng).
-3. Đổi sang MultipleNegativesRankingLoss (không margin, không sụp đổ) nhưng vẫn Recall -0.1080 — do
-   hard negative đào từ retriever mạnh (top-ranked của v1) dính ~12% false negative (tài liệu gần
-   trùng nội dung với đáp án đúng, do 27 nhóm tài liệu trùng lặp + GT thiếu sót trong data gốc).
+3. Đổi sang MultipleNegativesRankingLoss (không margin, không sụp đổ) nhưng vẫn Recall -0.1080 — nghi
+   ngờ do hard negative đào từ retriever mạnh (top-ranked của v1) dính ~12% false negative (tài liệu
+   gần trùng nội dung với đáp án đúng, do 27 nhóm tài liệu trùng lặp + GT thiếu sót trong data gốc).
+4. (08-27) Kiểm chứng trực tiếp giả thuyết (3) bằng cách lọc false-negative theo ngưỡng cosine 0,85
+   trước khi mining (`--hard-negative-cosine-max`) — filter chạy đúng (412/6519 candidate bị loại,
+   đúng bậc độ lớn với ước tính), nhưng Δ vẫn -0.1189, KHÔNG cải thiện so với Lần 3. **Giả thuyết false-
+   negative-contamination bị bác bỏ** như nguyên nhân chính — vấn đề nằm ở chỗ khác chưa xác định được
+   (ứng viên: batch_size=8 quá nhỏ khiến MNRL thiếu in-batch negative, hoặc bản thân việc fine-tune tiếp
+   một model đã pretrain mạnh trên tập train hẹp gây catastrophic forgetting kiểu khác cơ chế (1)).
 
 Kết luận: model AITeamVN gốc (1,1 triệu triplet pretrain) đã ở gần điểm tối ưu cục bộ tốt cho domain
-này — cả fine-tune thêm lẫn đổi sang model tổng quát mạnh hơn (`gte-Qwen2-1.5B-instruct`) đều không
-vượt qua được nó trong mọi thử nghiệm đã làm.
+này — cả fine-tune thêm (4/4 lần, 4 cơ chế khác nhau đã loại trừ) lẫn đổi sang model tổng quát mạnh hơn
+(`gte-Qwen2-1.5B-instruct`) đều không vượt qua được nó. **Hướng fine-tune ĐÓNG HẲN, không thử lại nữa**
+trừ khi có ý tưởng thực sự mới (không phải biến thể của 4 giả thuyết đã loại trừ).
 
 **Reranker đóng dứt điểm sau 4 phép thử độc lập:** thay thế thứ hạng RRF hoàn toàn (2 biến thể model)
 và làm nguồn đóng góp phụ trong RRF thay vì thay thế (2 biến thể khác) — cả 4 đều làm giảm điểm, biến
@@ -92,7 +100,7 @@ mục 7), không phân biệt theo AI làm hay ai có quyền truy cập nguồn
 
 ## Hướng đã đóng (không cần thử lại trừ khi có ý tưởng mới)
 
-Fine-tune embedding (3 lần, 3 cơ chế thất bại khác nhau) · reranker mọi hình thức (4 phép thử độc lập)
+Fine-tune embedding (4 lần, 4 cơ chế thất bại khác nhau, xem mục "Fine-tune" ở trên) · reranker mọi hình thức (4 phép thử độc lập)
 · đổi sang embedding model khác (`gte-Qwen2-1.5B-instruct`, `AITeamVN v2`, `bge-m3` gốc, `vietlegal-harrier`
 đứng riêng — đều thua v1) · entity-boost injection · citation-graph injection · dedup+backfill hậu-xử-lý
 · sweep cách gộp chunk→document (max vẫn tốt nhất) · sweep lưới `dense-top-n`/`bm25-top-n`/`rrf-k`
@@ -111,8 +119,7 @@ tín hiệu (dù bị nhiễu bởi truncation hay không) không bổ trợ đ�
 
 ## Hướng còn lại (chưa thử hoặc ưu tiên thấp)
 
-Lọc hard-negative theo ngưỡng cosine trước khi fine-tune lại (kỳ vọng thấp — cần +0.0165 để vào Top 10
-trong khi lần fine-tune gần nhất đang ở -0.108) · `itdainb/PhoRanker` hoặc `Qwen/Qwen3-Reranker-0.6B`
+`itdainb/PhoRanker` hoặc `Qwen/Qwen3-Reranker-0.6B`
 (ưu tiên thấp, pattern reranker domain-specific đã thua 2 lần) · `CATI-AI/Qwen3-Embedding-0.6B-vietnamese-legal-v3`
 (gated, cần Hoàng tự xác minh prefix — không to hơn v1 nhưng là kiến trúc Qwen3 + domain luật, chưa
 thử) · query expansion (PRF/RM3) cho nhánh BM25 — cổ điển, chưa thử, không cần GPU, chỉ dùng corpus

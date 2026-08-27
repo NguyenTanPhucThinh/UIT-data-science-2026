@@ -157,6 +157,10 @@ def mine_hard_negatives_from_ranks(
     top_k: int = 5,
     max_chars: int = 2000,
     passage_prefix: str = "",
+    cosine_max: float = None,
+    corpus_embedding_cache: str = None,
+    embedding_model=None,
+    scan_limit: int = 50,
 ):
     """Hard negative lấy TỪ CHÍNH THỨ HẠNG CỦA RETRIEVER THẬT (thêm 2026-08-22) — chất lượng cao hơn
     hẳn `mine_hard_negatives()` ở trên, và KHÔNG tốn GPU vì tái dùng file thứ hạng đã sinh sẵn.
@@ -170,6 +174,20 @@ def mine_hard_negatives_from_ranks(
     retriever ĐANG DÙNG THẬT xếp cho ĐÚNG các câu hỏi train này. Lấy các chunk xếp hạng cao NHƯNG
     thuộc document KHÔNG nằm trong đáp án -> đó chính là những lỗi thật retriever đang mắc, tức
     negative khó nhất và sát thực tế nhất có thể có.
+
+    ⚠️ THÊM 2026-08-23 — LỌC FALSE NEGATIVE theo cosine (root cause của LẦN 3 thất bại, xem
+    submission-log-task1.md mục "LẦN 3: fine-tune bằng MNRL"): đo trực tiếp cho thấy ~12,3% negative
+    mined kiểu trên có cosine > 0.90 với CHÍNH chunk đáp án đúng (gần trùng nội dung, do 27 nhóm tài
+    liệu trùng lặp/GT thiếu sót đã biết) — dạy model rằng đoạn văn gần như đúng đáp án là SAI, phá
+    hỏng khả năng phân biệt. Truyền `cosine_max` (vd 0.85) để BỎ QUA mọi candidate có
+    cosine(candidate, positive) > cosine_max, quét sâu hơn trong `ranks[r]` (tối đa `scan_limit`) để
+    bù lại phần bị lọc thay vì chỉ dừng ở top_k đầu tiên không phải gold document.
+
+    Yêu cầu khi dùng cosine_max: `corpus_embedding_cache` (.npz, có mảng embedding CÙNG THỨ TỰ HÀNG
+    với `chunks_path` — đã verify align 100% trong log dự án, vd `outputs/cache/embcompare_aiteamvn.npz`)
+    để lấy embedding của TỪNG CANDIDATE NEGATIVE mà KHÔNG tốn GPU (đã encode sẵn từ trước). Chỉ cần
+    encode THÊM các đoạn `positive` bằng `embedding_model` (rẻ — vài nghìn câu DUY NHẤT, encode 1 lần
+    trước khi mining, không phải mỗi candidate).
     """
     import numpy as np
 
@@ -187,28 +205,69 @@ def mine_hard_negatives_from_ranks(
             chunk_text.append(obj["passage"])
     logger.info("Đã đọc %d chunk", len(chunk_doc))
 
+    corpus_emb = None
+    pos_emb_by_text = {}
+    if cosine_max is not None:
+        if corpus_embedding_cache is None or embedding_model is None:
+            raise ValueError(
+                "cosine_max được đặt nhưng thiếu corpus_embedding_cache hoặc embedding_model — "
+                "không thể lọc false negative."
+            )
+        logger.info("Load cache embedding corpus để lọc false negative: %s", corpus_embedding_cache)
+        cd = np.load(corpus_embedding_cache, allow_pickle=False)
+        key = "embeddings" if "embeddings" in cd.files else cd.files[0]
+        corpus_emb = np.asarray(cd[key], dtype=np.float32)
+        if len(corpus_emb) != len(chunk_doc):
+            raise ValueError(
+                f"Cache embedding ({len(corpus_emb)} hàng) KHÔNG khớp số chunk ({len(chunk_doc)}) — "
+                f"KHÔNG dùng được, kiểm tra lại --corpus-embedding-cache-for-filter."
+            )
+        corpus_emb = corpus_emb / np.maximum(np.linalg.norm(corpus_emb, axis=1, keepdims=True), 1e-12)
+
+        unique_positives = sorted({positive for _, positive, _, _ in pairs})
+        logger.info("Encode %d đoạn positive DUY NHẤT để tính cosine lọc negative...", len(unique_positives))
+        pos_vecs = embedding_model.encode(
+            unique_positives, batch_size=64, convert_to_numpy=True,
+            normalize_embeddings=True, show_progress_bar=True,
+        )
+        pos_emb_by_text = dict(zip(unique_positives, pos_vecs))
+
     triplets = []
     missing = 0
+    n_filtered_total = 0
     for question, positive, qid, _pos_doc_id in pairs:
         r = row_of.get(str(qid))
         if r is None:
             missing += 1
             continue
         gold = gold_by_qid.get(str(qid), set())
+        pos_vec = pos_emb_by_text.get(positive) if cosine_max is not None else None
         n = 0
+        scanned = 0
         for ci in ranks[r]:
+            if n >= top_k or scanned >= scan_limit:
+                break
+            scanned += 1
             ci = int(ci)
             if chunk_doc[ci] in gold:
                 continue  # BỎ QUA mọi chunk thuộc document ĐÚNG (kể cả chunk khác của cùng doc)
+            if cosine_max is not None and pos_vec is not None:
+                cos = float(np.dot(corpus_emb[ci], pos_vec))
+                if cos > cosine_max:
+                    n_filtered_total += 1
+                    continue  # BỎ QUA candidate gần trùng đáp án — false negative nghi ngờ cao
             triplets.append((question, positive, passage_prefix + chunk_text[ci][:max_chars]))
             n += 1
-            if n >= top_k:
-                break
 
     if missing:
         logger.warning(
             "%d cặp không tìm thấy question_id trong %s — bỏ qua. Kiểm tra file thứ hạng có được "
             "sinh ĐÚNG trên tập câu hỏi đang train hay không.", missing, ranks_path,
+        )
+    if cosine_max is not None:
+        logger.info(
+            "Đã lọc %d candidate negative có cosine > %.2f với đáp án đúng (nghi false negative)",
+            n_filtered_total, cosine_max,
         )
     logger.info("Tạo được %d triplet từ thứ hạng retriever thật (top_k=%d/câu hỏi)", len(triplets), top_k)
     return triplets
@@ -293,6 +352,21 @@ def main() -> None:
         "--hard-negative-chunks", default="data/processed/chunks_corpus.jsonl",
         help="File chunk mà --hard-negative-ranks tham chiếu tới (chỉ số dòng = chỉ số chunk).",
     )
+    parser.add_argument(
+        "--hard-negative-cosine-max", type=float, default=None,
+        help="Thêm 2026-08-23 — lọc FALSE NEGATIVE: bỏ qua mọi candidate hard-negative có "
+             "cosine(candidate, positive) > ngưỡng này (khuyến nghị 0.85, xem phân tích LẦN 3 trong "
+             "submission-log-task1.md — khoảng 12,3%% negative kiểu cũ gần trùng nội dung đáp án đúng). Chỉ "
+             "áp dụng khi dùng --hard-negative-ranks. Bỏ trống = giữ hành vi cũ (không lọc). BẮT BUỘC "
+             "truyền kèm --corpus-embedding-cache-for-filter khi bật.",
+    )
+    parser.add_argument(
+        "--corpus-embedding-cache-for-filter", default=None,
+        help="Cache embedding TOÀN CORPUS (.npz, cùng thứ tự hàng với --hard-negative-chunks, vd "
+             "outputs/cache/embcompare_aiteamvn.npz) — dùng để tính cosine lọc false negative KHÔNG "
+             "tốn GPU (embedding negative đã có sẵn, chỉ encode thêm các đoạn positive). Bắt buộc nếu "
+             "đặt --hard-negative-cosine-max.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto", help="'auto' (mặc định, ưu tiên GPU nếu có), 'cuda', hoặc 'cpu'")
     parser.add_argument(
@@ -322,20 +396,14 @@ def main() -> None:
              "đời mới (Turing/Ampere trở lên, có Tensor Core) mà chất lượng gần như không đổi. "
              "Không bật mặc định để không đổi hành vi cũ (bqbbao6 đã train ổn ở fp32).",
     )
-    parser.add_argument(
-        "--checkpoint-steps", type=int, default=200,
-        help="Lưu checkpoint (model tạm) mỗi N step vào <output-dir>-checkpoints (thêm 2026-08-15). "
-             "sentence-transformers MẶC ĐỊNH KHÔNG lưu checkpoint giữa chừng (chỉ lưu model cuối cùng "
-             "SAU KHI chạy xong toàn bộ epochs) - với những lần chạy dài (vài tiếng trở lên, đặc biệt "
-             "model lớn + --max-seq-length dài dễ gây tràn VRAM giữa chừng nếu 1 batch ngẫu nhiên chứa "
-             "chunk gần độ dài tối đa), nếu crash (OOM, mất điện, lỗi driver...) ở step 1000/1146 sẽ MẤT "
-             "TRẮNG toàn bộ tiến độ, phải chạy lại từ đầu. Truyền 0 để tắt hẳn checkpoint (giống hành vi "
-             "cũ trước 2026-08-15).",
-    )
-    parser.add_argument(
-        "--checkpoint-keep", type=int, default=3,
-        help="Giữ lại tối đa N checkpoint gần nhất (xoá bớt checkpoint cũ để đỡ tốn ổ đĩa), mặc định 3.",
-    )
+    # ⚠️ ĐÃ XOÁ 2 flag CHẾT ở đây (2026-08-26): `--checkpoint-steps`/`--checkpoint-keep` được khai
+    # báo + viết tài liệu đầy đủ nhưng KHÔNG dòng nào trong main() đọc `args.checkpoint_steps` hay
+    # `args.checkpoint_keep` — cơ chế checkpoint THẬT SỰ đang dùng (đã verify: có truyền vào
+    # model.fit() ở cuối main()) là `--checkpoint-path` + `--checkpoint-save-steps` +
+    # `--checkpoint-save-total-limit` ở trên. Ai truyền `--checkpoint-steps 250` nghĩ rằng đang chỉnh
+    # tần suất checkpoint sẽ bị ÂM THẦM BỎ QUA — cùng loại bug với `--fp16` chết đã sửa 2026-08-22.
+    # Phát hiện khi chạy `python -m src.training.finetune_embedding --help` (bài học cũ: py_compile
+    # không đủ) và grep chéo `args.checkpoint_*` xem cờ nào thực sự được đọc.
     parser.add_argument(
         "--resume-from-checkpoint", action="store_true",
         help="Tiếp tục train từ checkpoint gần nhất trong <output-dir>-checkpoints nếu có (thêm "
@@ -392,10 +460,19 @@ def main() -> None:
                 str(qid): set(str(d) for d in item["answer"])
                 for qid, item in load_labeled_questions(args.train_json).items()
             }
+            if args.hard_negative_cosine_max is not None and not args.corpus_embedding_cache_for_filter:
+                logger.error(
+                    "--hard-negative-cosine-max được đặt nhưng THIẾU --corpus-embedding-cache-for-filter "
+                    "— không thể lọc false negative, dừng lại."
+                )
+                sys.exit(1)
             triplets = mine_hard_negatives_from_ranks(
                 pairs, gold_by_qid, args.hard_negative_ranks, args.hard_negative_chunks,
                 top_k=args.hard_negative_top_k, max_chars=args.max_chars,
                 passage_prefix=args.passage_prefix,
+                cosine_max=args.hard_negative_cosine_max,
+                corpus_embedding_cache=args.corpus_embedding_cache_for_filter,
+                embedding_model=model,
             )
         else:
             corpus = CorpusReader(args.corpus)
