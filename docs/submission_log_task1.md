@@ -36,6 +36,7 @@ chunk→document bằng max-score, top-k=5, KHÔNG rerank, KHÔNG hậu-xử-lý
 | — | 08-22/23 | Fine-tune lại v1 (2 lần: TripletLoss margin=5, rồi MultipleNegativesRankingLoss) | Sụp đổ (0.0046), rồi -0.1080 | — | 3/3 lần fine-tune AITeamVN đều thất bại (xem mục "Fine-tune" bên dưới) |
 | — | 08-27 | **Lần 4:** MNRL + lọc hard-negative theo ngưỡng cosine 0,85 (loại candidate gần trùng đáp án trước khi mining, khắc phục đúng nguyên nhân đã đo của Lần 3) | -0.1189 (quick_eval subset, cùng phép đo với Lần 3) | — | Lọc CHẠY ĐÚNG (412/6519 candidate bị loại, ~6,3%, cùng bậc độ lớn với ước tính 12,3% trước đó) nhưng Δ KHÔNG cải thiện — còn hơi tệ hơn Lần 3. Kết luận: false-negative contamination KHÔNG PHẢI nguyên nhân chính của thất bại fine-tune. **ĐÓNG HẲN hướng fine-tune (4/4 lần thất bại, 4 cơ chế khác nhau đã loại trừ)** |
 | — | 08-23 | Dedup+backfill hậu-xử-lý 27 nhóm tài liệu trùng lặp | -0.0025 đến -0.0039 (3 phép đo độc lập, đều âm) | — | ĐÓNG |
+| — | 08-28 | Thêm nhánh `BAAI/bge-m3` SPARSE (lexical học được, tự cài đắp lại sparse head từ `sparse_linear.pt`, KHÔNG dùng thư viện FlagEmbedding) làm nguồn thứ 4 RRF | Đỉnh 0.9346 tại `m3sparse=0.04-0.05` (Δ+0.0027), lưới mịn (0→0.08, bước 0.01) cho đường cong TRƠN MỘT ĐỈNH — xác nhận tín hiệu THẬT, không phải nhiễu | — | Tín hiệu thật nhưng QUÁ NHỎ để tin theo quy tắc đã chốt (cần ≥0.01, lý tưởng ≥0.02); tiền lệ entity-boost (local +0.0007 → public -0.0010) cho thấy rủi ro đổi dấu ở mức Δ nhỏ này là có thật. KHÔNG đóng hẳn (khác gte-Qwen2) — GIỮ làm ứng viên kết hợp: thử cộng `m3sparse≈0.04` vào bất kỳ cấu hình mới nào từ B1/B2/hướng #1 (score-based fusion) trước khi nộp, xem cải thiện nhỏ có cộng dồn vượt ngưỡng không |
 
 ## Các phát hiện phương pháp luận quan trọng
 
@@ -50,7 +51,10 @@ thất bại.
 **Cơ chế RRF multi-branch ensemble:** `score(d) = Σ w_i / (rrf_k + rank_i(d))`. Cửa sổ trọng số hữu
 ích RẤT HẸP và phụ thuộc `rrf_k` — với `rrf_k=60`, trọng số dưới ~0.8 gần như vô tác dụng, ~1.0 mới đủ
 để cứu tài liệu bị model chính bỏ sót, ~1.5 gây "thảm hoạ" (nguồn phụ chiếm toàn bộ top-5). Hạ `rrf_k`
-làm đường cong dốc hơn, giảm trọng số cần thiết.
+làm đường cong dốc hơn, giảm trọng số cần thiết. **Vị trí cửa sổ này đổi hoàn toàn theo BẢN CHẤT nguồn
+phụ** — không có công thức chung để đoán trước, phải sweep: harrier (dense, khác kiến trúc) cần
+0,6-1,2; bge-m3 sparse (lexical, có phần trùng lặp với BM25 đã có sẵn) cửa sổ chỉ 0,02-0,06, cao hơn
+là lấn át tín hiệu chính ngay; gte-Qwen2 (dense, cùng loại v1) không có cửa sổ nào có ích.
 
 **Model "domain-specific" không tự động thắng model tổng quát:** lặp lại 2 lần trong dự án — reranker
 `AITeamVN/Vietnamese_Reranker` (đã tune cho pháp lý) thua `BAAI/bge-reranker-v2-m3` vanilla; embedding
@@ -123,9 +127,19 @@ tín hiệu (dù bị nhiễu bởi truncation hay không) không bổ trợ đ�
 (ưu tiên thấp, pattern reranker domain-specific đã thua 2 lần) · `CATI-AI/Qwen3-Embedding-0.6B-vietnamese-legal-v3`
 (gated, cần Hoàng tự xác minh prefix — không to hơn v1 nhưng là kiến trúc Qwen3 + domain luật, chưa
 thử) · query expansion (PRF/RM3) cho nhánh BM25 — cổ điển, chưa thử, không cần GPU, chỉ dùng corpus
-chính thức nên hợp lệ · thử nghiệm chunking khác (kích thước/overlap) · cập nhật
+chính thức nên hợp lệ · sweep `k1`/`b` của BM25Okapi (chưa từng thử, chỉ CPU, cảnh báo ~4GB RAM đỉnh
+`build_bm25_fast_matrix`) · nhánh embedding `huyydangg/DEk21_hcmute_embedding` (0,1 tỷ, kiến trúc
+PhoBERT/bkai CHƯA có mặt trong ensemble, train sẵn trên QA pháp lý — nhưng max_seq_length chỉ 256,
+gần chắc thua đứng riêng, chỉ đáng thử làm nhánh phụ nhẹ) · fusion theo SCORE thay vì chỉ RANK (RRF
+hiện tại vứt bỏ toàn bộ điểm số, `save_ranks()`/`load_ranks()` cần đổi format CÓ tương thích ngược với
+20+ file `ranks_*.npz` đang có) · thử nghiệm chunking khác (kích thước/overlap) · cập nhật
 `scripts/allowed-models.md` cho harrier trong ensemble chính thức · chờ Kiên xem lại GT cho 13 câu hỏi
 lương (re-crawl 20 tài liệu rỗng KHÔNG còn là việc cần làm — xem cảnh báo tuân thủ ở mục data quality).
+
+**`BAAI/bge-m3` sparse (lexical học được) làm nhánh phụ:** ĐÃ THỬ (08-28), xem dòng log ở trên — tín
+hiệu thật (đường cong trơn một đỉnh tại `m3sparse=0,04-0,05`) nhưng quá nhỏ (Δ+0,0027) để nộp riêng.
+KHÔNG đóng hẳn — **kết hợp cùng cải tiến khác** (fusion theo score, sweep BM25 k1/b, reranker B1/B2)
+trước khi cân nhắc nộp, xem cộng dồn có vượt ngưỡng +0,01-0,02 không.
 
 ## Ghi chú tuân thủ
 
