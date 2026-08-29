@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # NHANH BGE-M3 SPARSE (lexical hoc duoc) LAM NGUON THU 4 CHO ENSEMBLE — 2026-08-27
 #
 # VI SAO HUONG NAY: pipeline dang co v1 (dense) + harrier (dense) + BM25 (lexical THONG KE).

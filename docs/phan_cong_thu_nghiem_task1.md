@@ -18,11 +18,12 @@ trong bảng dưới đây ngay khi chạy xong. Khi một hướng đã có **S
 (weight 0.1), `rrf_k=60`, gộp max, KHÔNG rerank, KHÔNG dedup hậu-xử-lý. Tổng ~1,16 tỷ tham số (dưới
 hạn mức 4 tỷ, còn dư ~2,84 tỷ nếu muốn thêm nhánh).
 
-**12+ hướng đã đóng, KHÔNG thử lại:** fine-tune embedding (4 lần, 4 cơ chế thất bại khác nhau) ·
+**13+ hướng đã đóng, KHÔNG thử lại:** fine-tune embedding (4 lần, 4 cơ chế thất bại khác nhau) ·
 reranker mọi hình thức (4 phép thử độc lập) · đổi hẳn embedding model (`gte-Qwen2-1.5B-instruct`
-— cả đứng riêng lẫn làm nhánh ensemble, `AITeamVN v2`, `bge-m3` gốc, `vietlegal-harrier` đứng riêng) ·
-entity-boost · citation-graph · dedup+backfill · sweep cách gộp chunk→document · sweep lưới
-dense-top-n/bm25-top-n/rrf-k.
+— cả đứng riêng lẫn làm nhánh ensemble, `AITeamVN v2`, `bge-m3` gốc, `vietlegal-harrier` đứng riêng,
+`huyydangg/DEk21_hcmute_embedding` đứng riêng lẫn nhánh ensemble — đóng CUỐI CÙNG, không đường lùi vì
+max_seq_length=256 là trần kiến trúc) · entity-boost · citation-graph · dedup+backfill · sweep cách
+gộp chunk→document · sweep lưới dense-top-n/bm25-top-n/rrf-k.
 
 **⚠️ Quy tắc thẩm định bắt buộc áp dụng cho MỌI kết quả bên dưới:** chênh lệch Recall LOCAL dưới
 ~0.01 KHÔNG đủ tin cậy để dự đoán PUBLIC (đã kiểm chứng nhiều lần, xem chi tiết trong

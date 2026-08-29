@@ -279,6 +279,10 @@ def cmd_rank(args) -> None:
     if top_n < args.top_n:
         print(f"[chú ý] top_n giảm {args.top_n} -> {top_n} vì corpus chỉ có {n_chunk} chunk.")
     all_ranks = np.zeros((len(questions), top_n), dtype=np.int32)
+    # THÊM 2026-08-28: lưu thêm ĐIỂM THÔ của đúng top_n ứng viên, để nguồn này dùng được với
+    # `ensemble_fusion fuse --mode score` (CombSUM) chứ không chỉ RRF. Chỉ THÊM key "scores" vào
+    # .npz -> mọi script RRF cũ đọc file này vẫn chạy y hệt (load_ranks bỏ qua key thừa).
+    all_scores = np.zeros((len(questions), top_n), dtype=np.float32)
     qb = args.score_batch_size
     for start in range(0, len(questions), qb):
         qs = q_mat[start : start + qb]
@@ -288,7 +292,9 @@ def cmd_rank(args) -> None:
         for j in range(scores.shape[1]):
             col = scores[:, j]
             idx = np.argpartition(-col, min(top_n, len(col) - 1))[:top_n]
-            all_ranks[start + j] = idx[np.argsort(-col[idx])]
+            order = idx[np.argsort(-col[idx])]
+            all_ranks[start + j] = order
+            all_scores[start + j] = col[order]
         print(f"  đã chấm {min(start+qb, len(questions))}/{len(questions)} câu hỏi")
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -296,6 +302,7 @@ def cmd_rank(args) -> None:
         args.out,
         question_ids=np.array([str(q["question_id"]) for q in questions]),
         ranks=all_ranks.astype(np.int32),
+        scores=all_scores.astype(np.float32),
     )
     print(f"\nĐã lưu thứ hạng: {args.out}  (shape={all_ranks.shape})")
 
