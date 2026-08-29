@@ -544,6 +544,101 @@ nhưng nộp public (`m3sparse=0.04`, xem bảng "Danh mục đã nộp" ở m�
 **0.9183, Δ−0.0025 so baseline 0.9208**. Không còn "chờ kết hợp cùng cải tiến khác" — bản thân
 hướng đã có bằng chứng public âm, cộng với gì cũng không còn ý nghĩa để thử.
 
+**CỬA CHẶN `-Phase blend-pretrained` (29-08) — kết quả, KHÔNG khớp gọn với 1 trong 2 kịch bản đã dự
+kiến:**
+
+```
+alpha    Recall@5    Δ         b(cứu)  c(hỏng)   p
+0.000    0.9319      +0.0000   0       0         1.0000   <- sanity check: khớp đúng baseline
+0.050    0.9328      +0.0010   4       4         1.0000
+0.100    0.9343      +0.0024   9       7         0.8036   <- "đỉnh" theo Recall thô
+0.200    0.9325      +0.0006   10      10        1.0000
+0.300    0.9292      -0.0026   10      15        0.4244
+0.500    0.9226      -0.0092   13      28        0.0275
+0.750    0.9089      -0.0229   13      45        0.0000
+1.000    0.9036      -0.0283   15      54        0.0000
+1.500    0.8946      -0.0373   15      66        0.0000
+3.000    0.8742      -0.0576   16      95        0.0000
+```
+
+Sanity check `alpha=0` → đúng 0.9319, pipeline trộn điểm không có lỗi.
+
+Không phải kịch bản (1) "giảm đơn điệu ngay từ alpha nhỏ nhất" → **truncation KHÔNG giết tín hiệu
+hoàn toàn**, PhoRanker gốc vẫn phân biệt được ít nhiều dù chunk bị cắt. Nhưng cũng không phải kịch
+bản (2) "đỉnh vững" như doctype-prior từng có (b=10/c=1, p=0.0117) — "đỉnh" ở alpha=0.1 có **b=9/c=7
+gần như cân bằng, p=0.8036 hoàn toàn không có ý nghĩa** — về bản chất thống kê đây là NHIỄU, không
+phải tín hiệu rõ. Từ alpha=0.5 trở đi giảm có ý nghĩa thống kê thật (p=0.0275 → p<0.0001) — khớp
+đúng mẫu lịch sử "reranker trọng số cao = phá hoại" (harrier w=1.5 trước đây).
+
+**Đọc theo đúng tiêu chí cửa chặn đã đặt ra** (chỉ hỏi CÓ tín hiệu hay không, chưa hỏi đủ lớn để nộp
+hay không): cửa chặn PASS về mặt kỹ thuật — không sụp đổ ngay từ đầu, còn le lói vài dấu hiệu tương
+quan thật ở alpha nhỏ. Nhưng phải nói thẳng: tín hiệu này **yếu và nhiễu hơn hẳn** tín hiệu mạnh
+nhất từng có của cả dự án (doctype-prior), và tín hiệu ĐÓ đã đảo dấu khi lên public. Cửa chặn không
+cho lý do gì để lạc quan hơn trước — chỉ xác nhận "chưa chết hẳn, còn đáng thử vì rẻ và là hướng
+cuối cùng", không phải "có bằng chứng đáng tin cậy". Quyết định: **đi tiếp `-Phase train`** (fine-
+tune có thể khuếch đại tín hiệu yếu này — đây chính là lý do làm fine-tune thay vì dừng ở pretrained
+— nhưng hạ kỳ vọng xuống mức tối thiểu, coi như vé số cuối cùng chứ không phải hướng có xác suất cao).
+
+**`-Phase blend-finetuned` (29-08) — kết quả CUỐI, đóng hẳn hướng PhoRanker:**
+
+```
+alpha    Recall@5    Δ         b(cứu)  c(hỏng)   p
+0.000    0.9319      +0.0000   0       0         1.0000   <- sanity check: khớp đúng baseline
+0.050    0.9320      +0.0001   3       3         1.0000
+0.100    0.9333      +0.0014   5       4         1.0000   <- "đỉnh" theo Recall thô
+0.200    0.9315      -0.0004   6       7         1.0000
+0.300    0.9322      +0.0004   10      9         1.0000
+0.500    0.9310      -0.0009   12      14        0.8450
+0.750    0.9295      -0.0023   13      18        0.4731
+1.000    0.9281      -0.0038   13      20        0.2962
+1.500    0.9274      -0.0045   18      26        0.2912
+3.000    0.9163      -0.0156   20      44        0.0037
+```
+
+Sanity check `alpha=0` → đúng 0.9319, không lỗi.
+
+**Fine-tune KHÔNG khuếch đại tín hiệu — thậm chí còn LÀM YẾU ĐI so với bản pretrained**, ngược hẳn
+kỳ vọng ban đầu (lý do duy nhất để đi từ pretrained sang fine-tune):
+
+| | pretrained | fine-tuned (semi-hard) |
+|---|---|---|
+| đỉnh (alpha) | 0.1 | 0.1 |
+| Δ tại đỉnh | +0.0024 | **+0.0014** |
+| b / c tại đỉnh | 9 / 7 | **5 / 4** |
+| p tại đỉnh | 0.8036 | **1.0000** |
+| tổng số câu bị đổi (b+c) | 16 | **9** |
+
+Không chỉ Δ nhỏ hơn, mà mô hình sau fine-tune còn **thay đổi ÍT câu hơn hẳn** so với ensemble gốc
+(9 câu bị lật thay vì 16) — nghĩa là fine-tune làm cho reranker "đồng thuận" với ensemble hiện có
+nhiều hơn thay vì đưa ra phán đoán độc lập tốt hơn. Cách giải thích hợp lý nhất: negative "semi-hard"
+được đào ra TỪ CHÍNH pool ứng viên của ensemble (top-N theo `PROD_WEIGHTS`), nên fine-tune có xu
+hướng dạy mô hình "học lại" đúng thứ ensemble đã nghĩ trên các ứng viên top, chứ không phải học một
+phán đoán độc lập, chính xác hơn — một dạng distill-về-chính-teacher chứ không phải cải thiện thật.
+Vùng alpha lớn (≥0.5) cũng giảm ÍT gay gắt hơn bản pretrained (vd alpha=0.5: pretrained Δ−0.0092
+p=0.0275 vs fine-tuned Δ−0.0009 p=0.8450) — cùng hướng giải thích: reranker sau fine-tune ít lệch
+khỏi ensemble hơn theo cả hai chiều.
+
+**Quyết định: ĐÓNG hướng PhoRanker, KHÔNG nộp public.** Δ=0.0014 thấp hơn cả ngưỡng "vùng xám"
+(0.01-0.02), p=1.0000 — hoàn toàn không có ý nghĩa thống kê, và còn YẾU HƠN tín hiệu doctype-prior
+(Δ local +0.0072, p=0.0117) — tín hiệu MẠNH NHẤT dự án từng đo được cục bộ, và tín hiệu đó **đã đảo
+dấu trên public**. Không có lý do kỹ thuật nào để tin cấu hình yếu hơn nhiều lần này sẽ làm tốt hơn
+trên public — tốn 1 lượt nộp public gần như chắc chắn không mang lại gì, nên khuyến nghị **không
+nộp**, chấp nhận đóng hướng bằng bằng chứng local (khác các lần trước, lần này bằng chứng local đã
+đủ rõ để không cần xác nhận lại bằng public).
+
+**=> Với kết quả này, TOÀN BỘ các hướng kỹ thuật đã được đo trong "KIỂM KÊ HƯỚNG CÒN LẠI" (mục ở
+trên) đều đã đóng — kể cả hướng cuối cùng, khác cơ chế nhất (rerank fine-tune). Baseline RRF
+0.9208 (nộp 21-08) vẫn là cấu hình mạnh nhất của team cho Task 1.** Đòn bẩy còn lại KHÔNG còn nằm ở
+kỹ thuật retrieval/rerank nữa, mà ở:
+1. **Ngân sách nộp private test** (quy định mục 8: tối đa 3 lượt/ngày, điểm cuối = MAX toàn bộ
+   phương pháp đã nộp) — nộp nhiều cấu hình khác nhau trong 12-15 lượt private test (19-23/09) có
+   thể cho +0.005-0.01 "miễn phí" nhờ chọn được cấu hình may mắn nhất trên tập private, dù không có
+   cấu hình nào tốt hơn baseline MỘT CÁCH HỆ THỐNG trên public.
+2. **Nghĩa vụ tuân thủ còn treo**: khai báo model `vietlegal-harrier` theo quy định mục 7 (hạn
+   ~09-09 nếu tính 10 ngày trước 19-09) — vẫn CHƯA LÀM, cần quay lại trước đầu tháng 9.
+3. Data Statement + Model Card (mục 11), Docker + source code (mục 10) nếu vào top-7 — chưa cần làm
+   ngay nhưng nên lên kế hoạch trước khi hết thời gian.
+
 ## Ghi chú tuân thủ
 
 Tổng tham số ensemble hiện tại ~1,16 tỷ (v1 568M + harrier 596M), dưới hạn mức 4 tỷ (quy định mục 5).
