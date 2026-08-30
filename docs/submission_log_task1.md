@@ -33,8 +33,10 @@ chunk→document bằng max-score, top-k=5, KHÔNG rerank, KHÔNG hậu-xử-lý
 | 20 | 08-21 | **Ensemble v1+harrier(0.8)+bm25, rrf_k=8** | 0.9360 (+0.0065, p=0.033) | 0.9160 | Local RẤT chắc (kể cả xác nhận trên holdout 5602 câu độc lập) nhưng vẫn THUA public — harrier tổng quát hoá kém hơn v1 2 lần, trọng số nặng nhập luôn điểm yếu đó |
 | **21** | 08-22 | **Ensemble v1+harrier(0.2, nhẹ tay)+bm25, rrf_k=60** | — | **0.9208** | 🏆 **BEST HIỆN TẠI.** Chọn trọng số nhẹ theo suy luận từ khoảng cách local→public của từng model, KHÔNG theo local argmax |
 | — | 08-22 | Reranker làm nguồn RRF phụ (không thay thế) — 4 biến thể reranker khác nhau | Giảm đơn điệu mọi trọng số | — | ĐÓNG DỨT ĐIỂM hướng reranker cho Task 1 (4/4 phép thử độc lập đều âm) |
-| — | 08-22/23 | Fine-tune lại v1 (2 lần: TripletLoss margin=5, rồi MultipleNegativesRankingLoss) | Sụp đổ (0.0046), rồi -0.1080 | — | 3/3 lần fine-tune AITeamVN đều thất bại (xem mục "Fine-tune" bên dưới). ĐÓNG hướng fine-tune |
-| — | 08-23 | Dedup+backfill hậu-xử-lý 27 nhóm tài liệu trùng lặp | -0.0025 đến -0.0039 (3 phép đo độc lập, đều âm) | — | ĐÓNG |
+| 37 | 08-23 | Dedup+backfill hậu-xử-lý 27 nhóm tài liệu trùng lặp | -0.0025 đến -0.0039 (3 phép đo độc lập, đều âm) | — | ĐÓNG |
+| 38 | 08-30 | **Thêm nhánh `Qwen/Qwen3-Embedding-0.6B` vào ensemble (v1+harrier+bm25)** | 0.9294 (không đổi ở w=0, giảm đơn điệu ở w>0: 0.9289 tại w=0.2, 0.9111 tại w=1.2) | — | Giảm đơn điệu giống gte-Qwen2 — kiến trúc decoder pooling không bổ trợ được cho ensemble hiện tại. ĐÓNG |
+| 39 | 08-30 | **Tái kiểm tra nộp Public Test (v1=1.0 + harrier=0.2 + bm25=0.1, rrf_k=60)** | — | **0.9188** (Precision 0.1976, Recall 0.91875) | Xác nhận pipeline nộp bài độc lập hoạt động chuẩn xác, điểm số ổn định (~0.919 - 0.921). |
+
 
 ## Các phát hiện phương pháp luận quan trọng
 
