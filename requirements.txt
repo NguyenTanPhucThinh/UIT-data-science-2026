@@ -16,6 +16,7 @@ numpy>=1.26.0             # xử lý array & scores trong retrieval/fusion
 sentence-transformers[train]>=3.0.0
 accelerate>=1.1.0  # bắt buộc cho model.fit()/CrossEncoder.fit() - lỗi "requires accelerate>=1.1.0" nếu thiếu
 datasets>=2.19.0
+pyarrow==21.0.0  # pyarrow 25.0.1 bị Windows Application Control chặn DLL trên môi trường này
 scikit-learn>=1.3.0
 tqdm>=4.66.0
 sentencepiece>=0.2.0  # (2026-08-13) BẮT BUỘC để load 1 số model reranker/embedding chỉ có "slow"

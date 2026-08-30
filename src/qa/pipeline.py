@@ -7,7 +7,7 @@ from .config import ContextConfig, LegalQAGenerationConfig, LLMConfig
 from .context_builder import EvidenceContextBuilder
 from .generator import LocalLLMGenerator
 from .postprocess import clean_generated_answer, unsupported_legal_markers
-from .prompts import build_messages
+from .prompts import available_prompt_variants, build_messages
 from .types import QAInput, QAResult
 from tqdm import tqdm
 
@@ -23,8 +23,15 @@ class LegalQAPipeline:
         context_config: ContextConfig,
         generation_config: LegalQAGenerationConfig,
         generator: LocalLLMGenerator | None = None,
+        prompt_variant: str = "baseline",
     ):
+        if prompt_variant not in available_prompt_variants():
+            allowed = ", ".join(available_prompt_variants())
+            raise ValueError(
+                f"Unknown prompt_variant={prompt_variant!r}; choose one of: {allowed}"
+            )
         self.generation_config = generation_config
+        self.prompt_variant = prompt_variant
         self.generator = generator or LocalLLMGenerator(llm_config)
         self.context_builder = EvidenceContextBuilder(
             self.generator.tokenizer, context_config
@@ -39,7 +46,9 @@ class LegalQAPipeline:
         prepared: list[tuple[QAInput, str, int, list]] = []
         for item in inputs:
             built = self.context_builder.build(item.evidence, corpus_chunks)
-            messages = build_messages(item.question, built.text)
+            messages = build_messages(
+                item.question, built.text, prompt_variant=self.prompt_variant
+            )
             prompt_tokens = self.generator.count_message_tokens(messages)
             prepared.append(
                 (item, built.text, prompt_tokens, [messages, list(built.evidence_used)])

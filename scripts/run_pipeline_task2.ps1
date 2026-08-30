@@ -6,6 +6,8 @@ param(
     [string]$AnchorModel = "AITeamVN/Vietnamese_Embedding",
     [string]$HarrierModel = "mainguyen9/vietlegal-harrier-0.6b",
     [string]$LlmModel = "AITeamVN/Vi-Qwen2-1.5B-RAG",
+    [ValidateSet("baseline", "answer_first", "legal_structured", "grounded_concise", "full")]
+    [string]$PromptVariant = "baseline",
     [string]$AnchorEmbeddingCache = "outputs/cache/embcompare_aiteamvn.npz",
     [string]$HarrierEmbeddingCache = "outputs/cache/embcompare_vietlegal_harrier.npz",
     [string]$AnchorRanks = "outputs/cache/ranks_task2_aiteamvn.npz",
@@ -16,6 +18,7 @@ param(
     [int]$EmbeddingBatchSize = 64,
     [int]$QuestionBatchSize = 64,
     [int]$AnswerBatchSize = 1,
+    [string]$PythonExecutable = "",
     [switch]$RebuildRetrieval,
     [switch]$RebuildEmbeddingCaches,
     [switch]$RebuildGeneration,
@@ -25,10 +28,32 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Resolve-PythonExecutable {
+    param([string]$RequestedPath)
+    if ($RequestedPath) {
+        if (-not (Test-Path -LiteralPath $RequestedPath)) {
+            throw "-PythonExecutable does not exist: $RequestedPath"
+        }
+        return (Resolve-Path -LiteralPath $RequestedPath).Path
+    }
+    $repoVenvPython = Join-Path (Get-Location) ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $repoVenvPython) {
+        return (Resolve-Path -LiteralPath $repoVenvPython).Path
+    }
+    $command = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        throw "Python was not found. Activate .venv or pass -PythonExecutable <path-to-python.exe>."
+    }
+    return $command.Source
+}
+
+$PythonExecutable = Resolve-PythonExecutable $PythonExecutable
+Write-Host "Using Python: $PythonExecutable" -ForegroundColor DarkGray
+
 function Invoke-PythonStep {
     param([string]$Title, [string[]]$Arguments)
     Write-Host "`n=== $Title ===" -ForegroundColor Cyan
-    & python @Arguments
+    & $PythonExecutable @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "$Title failed with exit code $LASTEXITCODE"
     }
@@ -132,6 +157,7 @@ $runArgs = @(
     "-m", "src.evaluation.run_legalqa",
     "--questions", $Questions, "--chunks", $Chunks,
     "--llm-model", $LlmModel, "--output", $rawOutput,
+    "--prompt-variant", $PromptVariant,
     "--retrieval-context-output", $RetrievalContext, "--reuse-retrieval-context",
     "--generation-checkpoint", $GenerationCheckpoint,
     "--diagnostics-output", $diagnosticsOutput,

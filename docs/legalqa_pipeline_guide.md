@@ -432,6 +432,14 @@ Thử các prompt yêu cầu:
 Đánh giá riêng prompt trên cùng context và cùng decode greedy. Chỉ sau khi chốt prompt mới thử thay
 decoding; thay prompt và decoding cùng lúc sẽ không xác định được nguồn cải thiện.
 
+Mục A1 đã có wrapper tái lập toàn bộ thí nghiệm: tạo validation cố định, so sánh bốn prompt, chọn
+theo METEOR với ràng buộc ROUGE-L và sinh submission mới bằng prompt thắng. Xem
+[`legalqa_prompt_experiment_a1_guide.md`](legalqa_prompt_experiment_a1_guide.md) và chạy:
+
+```powershell
+.\scripts\run_prompt_experiment_a1.ps1 -LocalFilesOnly
+```
+
 ### Fine-tune LLM bằng LoRA/QLoRA
 
 Sau khi có validation đáng tin cậy, có thể tạo cặp huấn luyện:

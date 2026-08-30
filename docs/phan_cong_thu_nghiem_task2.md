@@ -35,7 +35,7 @@ ntphuc149/ViLegalQwen2.5-1.5B-Base.
 
 | # | Hướng thử nghiệm | Thời gian ước tính | Người phụ trách | Kết quả / Insights | METEOR LOCAL | Score PUBLIC |
 |---|---|---|---|---|:---:|:---:|
-| A1 | Thử biến thể prompt trong `src/qa/prompts.py`: trả lời trực tiếp, không preamble "Dựa vào...", ưu tiên ngắn gọn gần `train-2`, không suy luận khi evidence thiếu. Giữ nguyên context + LLM + greedy decode | ~4-6 giờ (~1 giờ chỉnh 3-4 biến thể + ~1-1,5 giờ/generation trên val, mỗi biến thể chỉ `-RebuildGeneration`) | **Bảo** | *(chưa chạy)* — đo riêng prompt, không đổi decoding cùng lúc | — | — |
+| A1 | Thử biến thể prompt trong `src/qa/prompts.py`: trả lời trực tiếp, không preamble "Dựa vào...", ưu tiên ngắn gọn gần `train-2`, không suy luận khi evidence thiếu. Giữ nguyên context + LLM + greedy decode | ~4-6 giờ (~1 giờ chỉnh 3-4 biến thể + ~1-1,5 giờ/generation trên val, mỗi biến thể chỉ `-RebuildGeneration`) | **Bảo** | Đã chạy, kết quả không thay đổi quá nhiều giữa các biến thể khác nhau của prompt. Prompt hiện tại ok. |  0.3772 |  0.3674 |
 | B1 | Thử finetune LLM Baseline mình đã dùng cho task 2 cho phần QA sử dụng QLora  | ~1-2 ngày (~2 giờ setup Colab/dataset + ~6-8 giờ GPU QLoRA trên ~7000 mẫu + ~2 giờ tích hợp adapter và generation eval) | **Thịnh** | *(chưa chạy)* — ưu tiên cao nhất, không cần encode lại corpus | — | — |
 | B2 | Thử dùng các LLM thay thế đã đề cập ở hướng mở đã cho| ~2-3 giờ/model (~30-45 phút download/tích hợp + ~1,5-2 giờ generation full 1000 câu public); ~1 ngày cho cả 3 model | **Bảo** | *(chưa chạy)* — chỉ mở sau A1 có prompt baseline ổn định | — | — |
 

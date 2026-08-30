@@ -205,8 +205,12 @@ def cmd_rank(args) -> None:
 
     try:
         from sentence_transformers import SentenceTransformer
-    except ImportError:
-        print("[lỗi] Thiếu sentence-transformers.", file=sys.stderr)
+    except ImportError as exc:
+        print(
+            "[lỗi] Không thể import sentence-transformers bằng "
+            f"{sys.executable}: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     cache = Path(args.embedding_cache)

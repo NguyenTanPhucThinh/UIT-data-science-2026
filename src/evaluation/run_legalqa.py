@@ -22,6 +22,7 @@ from src.qa.config import (
     LLMConfig,
 )
 from src.qa.pipeline import LegalQAPipeline
+from src.qa.prompts import available_prompt_variants
 from src.qa.types import EvidenceChunk, QAInput
 from src.evaluation.task_selection import require_question_task
 
@@ -137,6 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional single-retriever reranker; use 'none' to disable it",
     )
     parser.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
+    parser.add_argument(
+        "--prompt-variant",
+        choices=available_prompt_variants(),
+        default="baseline",
+        help="Named answer-style prompt. Keep this fixed while comparing other settings.",
+    )
     parser.add_argument(
         "--embedding-cache",
         default="outputs/cache/embcompare_aiteamvn.npz",
@@ -352,6 +359,7 @@ def main() -> None:
                 batch_size=args.answer_batch_size,
                 do_sample=False,
             ),
+            prompt_variant=args.prompt_variant,
         )
 
         def save_result(result) -> None:
