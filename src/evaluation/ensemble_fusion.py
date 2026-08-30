@@ -1,10 +1,6 @@
 """
 ENSEMBLE nhiều model embedding + BM25 bằng RRF nhiều nhánh (2026-08-21).
 
-CẤU HÌNH PRODUCTION ĐÃ XÁC NHẬN PUBLIC 2026-08-22: v1=1.0, harrier=0.2, BM25=0.1,
-rrf_k=60, top-n=100, aggregate=max, không reranker (Score PUBLIC 0.9208). Phần phân tích/sweep
-bên dưới được giữ như lịch sử dẫn tới quyết định; không dùng ví dụ harrier=0.8 làm mặc định mới.
-
 ĐỘNG LỰC (đo THẬT, không suy đoán — xem submission-log-task1.md mục "ensemble"):
 `AITeamVN/Vietnamese_Embedding` (v1, model chính thức) đang MISS 138 tài liệu GT trên val_split_20.
 Phân tích complementarity từ các file prediction CÓ SẴN cho thấy các model YẾU HƠN khi đứng riêng lại
@@ -92,11 +88,37 @@ Cách dùng (chạy từ thư mục GỐC repo):
 có trong `scripts/allowed-models.md` — model MỚI ngoài danh sách phải gửi đề xuất cho BTC TRƯỚC 10
 NGÀY so với hạn chót private test. v1 (568M) + harrier (596M) + bge-m3 (568M) = ~1,73 tỷ, vẫn dưới
 hạn mức, nhưng PHẢI cập nhật allowed-models.md + gửi đề xuất nếu chốt dùng thật.
+
+===============================================================================
+THÊM 2026-08-28: FUSE THEO ĐIỂM (CombSUM), KHÔNG CHỈ THEO HẠNG (RRF) — `fuse --mode score`
+===============================================================================
+ĐỘNG LỰC (phát hiện từ audit code, không phải suy đoán — xem submission-log-task1.md mục "fusion"):
+RRF ở trên CHỈ dùng `rank` (vị trí 1, 2, 3, ...), KHÔNG BAO GIỜ dùng điểm similarity/BM25 thật. Hai
+tài liệu hạng 1 với similarity 0.95 và 0.40 đóng góp Y HỆT NHAU vào RRF — "hạng 1 áp đảo mọi nguồn
+khác nhưng chỉ hơn hạng 2 một chút" và "hạng 1 vượt trội tuyệt đối" bị coi như nhau. Đây là thông tin
+BỊ VỨT BỎ hoàn toàn trong toàn bộ pipeline từ trước tới nay (`save_ranks` cũ chỉ lưu `ranks`, không
+lưu điểm) — không phải một biến thể của hướng đã thử, mà là CÁCH GỘP MỚI THẬT SỰ, đúng 1 trong 2
+phạm trù duy nhất từng đem lại cải thiện thật (đổi TÍN HIỆU hoặc đổi CÁCH GỘP).
+
+CƠ CHẾ: mỗi nguồn (v1, harrier, bm25, m3sparse, reranker...) giờ LƯU THÊM điểm thô của đúng top-N ứng
+viên đã lưu hạng (không lưu điểm cho TOÀN BỘ corpus — quá tốn, 1398 câu x 351394 chunk x 4 byte =
+~2GB/nguồn). Khi fuse theo điểm: chuẩn hoá per-query (min-max hoặc z-score, MỖI CÂU HỎI RIÊNG — bắt
+buộc vì thang điểm khác hẳn nhau giữa cosine similarity [-1,1], BM25 [0,+∞) không giới hạn, và logit
+reranker) rồi CỘNG CÓ TRỌNG SỐ (CombSUM): score(d) = Σ w_i * norm_i(score_i(d)), nguồn nào không xếp
+hạng tài liệu d thì KHÔNG đóng góp (giống hệt quy ước "weight=0 thì bỏ qua" của RRF).
+
+TƯƠNG THÍCH NGƯỢC: `save_ranks()` thêm tham số `scores` TUỲ CHỌN — mọi lệnh `rank`/`rank-bm25` cũ vẫn
+chạy được, chỉ là giờ LUÔN lưu thêm điểm (rẻ, cùng shape với ranks, ~1MB/nguồn). File .npz CŨ (sinh
+trước 2026-08-28, không có key "scores") vẫn đọc được bằng `load_ranks()` như trước — `fuse --mode
+rrf` (mặc định, KHÔNG đổi) hoạt động y hệt cũ trên cả file cũ lẫn mới. Chỉ `fuse --mode score` mới
+cần "scores" trong file — nếu thiếu sẽ báo lỗi rõ ràng, không phải KeyError khó hiểu.
+
+BẢO HIỂM: giống RRF, dùng `--mode rrf` (mặc định) tái lập ĐÚNG baseline 0.9319 vì code nhánh RRF
+KHÔNG ĐỔI MỘT DÒNG nào so với trước 2026-08-28.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import itertools
 import json
 import sys
@@ -136,32 +158,23 @@ def top_n_indices(scores, top_n: int):
     return idx[np.argsort(-scores[idx])]
 
 
-def question_text_hash(text: str) -> str:
-    """Stable fingerprint used to reject rank files created for stale question text."""
-    return hashlib.sha256(str(text).strip().encode("utf-8")).hexdigest()
-
-
-def save_ranks(
-    path: str,
-    question_ids: Sequence[str],
-    ranks,
-    question_texts: Optional[Sequence[str]] = None,
-) -> None:
+def save_ranks(path: str, question_ids: Sequence[str], ranks, scores=None) -> None:
+    """`scores` (thêm 2026-08-28, TUỲ CHỌN): điểm thô (similarity/BM25/reranker logit), CÙNG SHAPE và
+    CÙNG THỨ TỰ với `ranks` — scores[q, j] là điểm của tài liệu ranks[q, j]. Bỏ trống (None) vẫn ra
+    file y hệt hành vi cũ (tương thích ngược 100% với mọi consumer đang gọi load_ranks())."""
     import numpy as np
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "question_ids": np.array([str(q) for q in question_ids]),
-        "ranks": ranks.astype(np.int32),
-    }
-    if question_texts is not None:
-        if len(question_texts) != len(question_ids):
-            raise ValueError("question_texts and question_ids must have equal length")
-        payload["question_hashes"] = np.array(
-            [question_text_hash(text) for text in question_texts]
-        )
-    np.savez_compressed(path, **payload)
-    print(f"Đã lưu thứ hạng: {path}  (shape={ranks.shape})")
+    kwargs = dict(
+        question_ids=np.array([str(q) for q in question_ids]),
+        ranks=ranks.astype(np.int32),
+    )
+    extra = " (KHÔNG có scores — 'fuse --mode score' sẽ báo lỗi nếu dùng file này)"
+    if scores is not None:
+        kwargs["scores"] = scores.astype(np.float32)
+        extra = f", scores shape={scores.shape}"
+    np.savez_compressed(path, **kwargs)
+    print(f"Đã lưu thứ hạng: {path}  (shape={ranks.shape}{extra})")
 
 
 def load_ranks(path: str):
@@ -169,6 +182,18 @@ def load_ranks(path: str):
 
     d = np.load(path, allow_pickle=False)
     return [str(q) for q in d["question_ids"]], d["ranks"]
+
+
+def load_ranks_scores(path: str):
+    """Giống load_ranks() nhưng LOAD LUÔN scores — dùng riêng cho `fuse --mode score` (thêm 2026-08-28).
+    Trả về (question_ids, ranks, scores) với scores=None nếu file CŨ không có key này, để nơi gọi tự
+    báo lỗi rõ ràng thay vì KeyError mơ hồ ở giữa vòng lặp."""
+    import numpy as np
+
+    d = np.load(path, allow_pickle=False)
+    qids = [str(q) for q in d["question_ids"]]
+    scores = d["scores"] if "scores" in d.files else None
+    return qids, d["ranks"], scores
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +231,25 @@ def cmd_rank(args) -> None:
     if args.limit_questions:
         questions = questions[: args.limit_questions]
 
+    if args.use_segmented_text:
+        # Thêm 2026-08-28 cho nhánh DEk21 (PhoBERT/RoBERTa family) — các model này được train trên
+        # tiếng Việt ĐÃ TÁCH TỪ (word segmentation, nối bằng dấu "_"), KHÁC v1/harrier vốn dùng thẳng
+        # câu chữ thô. Data đã có sẵn 2 field song song (passage_segmented/question_segmented) từ
+        # trước — KHÔNG cần tách từ lại. Cách làm: gán đè "passage"/"question" bằng bản đã tách từ rồi
+        # để encode_chunks()/luồng encode câu hỏi bên dưới chạy Y NGUYÊN như cũ, không phải sửa 2 nơi.
+        n_miss_p = sum(1 for c in chunks if not c.get("passage_segmented"))
+        if n_miss_p:
+            print(f"[cảnh báo] {n_miss_p}/{len(chunks)} chunk THIẾU passage_segmented -> dùng lại "
+                  f"passage thô cho các chunk đó (có thể làm model PhoBERT-family xếp hạng kém hơn).",
+                  file=sys.stderr)
+        chunks = [dict(c, passage=(c.get("passage_segmented") or c["passage"])) for c in chunks]
+        n_miss_q = sum(1 for q in questions if not q.get("question_segmented"))
+        if n_miss_q:
+            print(f"[cảnh báo] {n_miss_q}/{len(questions)} câu hỏi THIẾU question_segmented -> dùng "
+                  f"lại question thô cho các câu đó.", file=sys.stderr)
+        print("--use-segmented-text: đang dùng passage_segmented/question_segmented (không phải văn "
+              "bản thô) cho toàn bộ encode.")
+
     print(f"Load embedding model: {args.embedding_model} (trust_remote_code={args.trust_remote_code})")
     model = SentenceTransformer(args.embedding_model, device=device, trust_remote_code=args.trust_remote_code)
     if args.max_seq_length is not None:
@@ -226,7 +270,6 @@ def cmd_rank(args) -> None:
     chunk_embeddings = encode_chunks(
         model, chunks, args.batch_size, str(cache),
         passage_prefix=args.passage_prefix, passage_prompt_name=args.passage_prompt_name,
-        force_reencode=args.force_encode,
     )
     if chunk_embeddings.shape[0] != len(chunks):
         print(
@@ -237,6 +280,7 @@ def cmd_rank(args) -> None:
         sys.exit(1)
 
     all_ranks = np.zeros((len(questions), args.top_n), dtype=np.int32)
+    all_scores = np.zeros((len(questions), args.top_n), dtype=np.float32)
     qids: List[str] = []
     for start in range(0, len(questions), args.question_batch_size):
         batch = questions[start : start + args.question_batch_size]
@@ -244,24 +288,22 @@ def cmd_rank(args) -> None:
             batch_size=args.question_batch_size, convert_to_numpy=True,
             normalize_embeddings=True, show_progress_bar=False,
         )
+        q_field = "question_segmented" if args.use_segmented_text else "question"
         if args.query_prompt_name:
-            batch_texts = [q["question"] for q in batch]
+            batch_texts = [(q.get(q_field) or q["question"]) for q in batch]
             encode_kwargs["prompt_name"] = args.query_prompt_name
         else:
-            batch_texts = [query_prefix + q["question"] for q in batch]
+            batch_texts = [query_prefix + (q.get(q_field) or q["question"]) for q in batch]
         emb = model.encode(batch_texts, **encode_kwargs).astype(np.float32)
         sims = emb @ chunk_embeddings.T
         for i, q in enumerate(batch):
-            all_ranks[start + i] = top_n_indices(sims[i], args.top_n)
+            idx = top_n_indices(sims[i], args.top_n)
+            all_ranks[start + i] = idx
+            all_scores[start + i] = sims[i][idx]  # cosine similarity thô (embedding đã normalize)
             qids.append(str(q["question_id"]))
         print(f"  đã xử lý {min(start + args.question_batch_size, len(questions))}/{len(questions)} câu hỏi")
 
-    save_ranks(
-        args.out,
-        qids,
-        all_ranks,
-        question_texts=[q["question"] for q in questions],
-    )
+    save_ranks(args.out, qids, all_ranks, scores=all_scores)
 
 
 def cmd_rank_reranker(args) -> None:
@@ -341,6 +383,7 @@ def cmd_rank_reranker(args) -> None:
                 model.max_length = args.max_length
 
     all_ranks = np.zeros((len(questions), n_cand), dtype=np.int32)
+    all_scores = np.zeros((len(questions), n_cand), dtype=np.float32)
     qb = max(1, args.question_batch_size)
     done = 0
     for start in range(0, len(questions), qb):
@@ -356,16 +399,13 @@ def cmd_rank_reranker(args) -> None:
             model.predict(pairs, batch_size=args.batch_size, show_progress_bar=False), dtype=np.float32
         ).reshape(len(batch), n_cand)
         for i, cand in enumerate(cands):
-            all_ranks[start + i] = cand[np.argsort(-scores[i])]
+            order = np.argsort(-scores[i])
+            all_ranks[start + i] = cand[order]
+            all_scores[start + i] = scores[i][order]  # logit thô của cross-encoder (chưa qua sigmoid)
         done += len(batch)
         print(f"  đã chấm {done}/{len(questions)} câu hỏi")
 
-    save_ranks(
-        args.out,
-        [str(q["question_id"]) for q in questions],
-        all_ranks,
-        question_texts=[q["question"] for q in questions],
-    )
+    save_ranks(args.out, [str(q["question_id"]) for q in questions], all_ranks, scores=all_scores)
 
 
 def cmd_rank_bm25(args) -> None:
@@ -381,6 +421,7 @@ def cmd_rank_bm25(args) -> None:
     bm25_fast = build_bm25_fast_matrix(bm25_index)
 
     all_ranks = np.zeros((len(questions), args.top_n), dtype=np.int32)
+    all_scores = np.zeros((len(questions), args.top_n), dtype=np.float32)
     qids: List[str] = []
     for start in range(0, len(questions), args.question_batch_size):
         batch = questions[start : start + args.question_batch_size]
@@ -390,16 +431,13 @@ def cmd_rank_bm25(args) -> None:
         ]
         scores_batch = bm25_scores_batch_fast(bm25_fast, q_tokens_batch)
         for i, q in enumerate(batch):
-            all_ranks[start + i] = top_n_indices(scores_batch[i], args.top_n)
+            idx = top_n_indices(scores_batch[i], args.top_n)
+            all_ranks[start + i] = idx
+            all_scores[start + i] = scores_batch[i][idx]  # điểm BM25 thô, KHÔNG giới hạn trên
             qids.append(str(q["question_id"]))
         print(f"  đã xử lý {min(start + args.question_batch_size, len(questions))}/{len(questions)} câu hỏi")
 
-    save_ranks(
-        args.out,
-        qids,
-        all_ranks,
-        question_texts=[q["question"] for q in questions],
-    )
+    save_ranks(args.out, qids, all_ranks, scores=all_scores)
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +469,56 @@ def fuse_one_question(rank_rows: Dict[str, "object"], weights: Dict[str, float],
         for rank, idx in enumerate(row[:n], start=1):
             rrf[int(idx)] += w / (rrf_k + rank)
     return rrf
+
+
+def normalize_scores(scores, method: str):
+    """Chuẩn hoá điểm của MỘT câu hỏi, MỘT nguồn (thêm 2026-08-28). Bắt buộc làm per-query, per-source
+    vì thang điểm khác hẳn nhau: cosine similarity [-1,1] (thực tế embedding đã chuẩn hoá nên gần
+    [0,1]), BM25 [0,+∞) không có trần, logit reranker chưa qua sigmoid có thể âm/dương tuỳ ý.
+
+    'minmax' (mặc định): co giãn về [0,1] theo min/max của ĐÚNG top-N ứng viên đã lưu cho câu hỏi đó
+    (không phải toàn corpus — không có điểm của phần còn lại). Đây là XẤP XỈ: min/max thật của toàn
+    corpus có thể rộng hơn, nhưng vì CombSUM chỉ cần so sánh TƯƠNG ĐỐI giữa các ứng viên đã vào pool,
+    xấp xỉ này chấp nhận được (giống cách RRF cũng chỉ nhìn thấy rank trong top-N, không phải toàn bộ).
+    'zscore': (x - trung bình) / độ lệch chuẩn — ít nhạy với 1-2 điểm ngoại lai hơn minmax.
+
+    Nếu mọi điểm bằng nhau (hi-lo hoặc std ≈ 0, ví dụ top-N toàn 0 do BM25 không khớp từ nào) trả về
+    toàn 0 — tránh chia 0, và hợp lý vì khi đó nguồn này không cung cấp thông tin phân biệt gì."""
+    import numpy as np
+
+    scores = np.asarray(scores, dtype=np.float64)
+    if method == "minmax":
+        lo, hi = float(scores.min()), float(scores.max())
+        if hi - lo < 1e-12:
+            return np.zeros_like(scores)
+        return (scores - lo) / (hi - lo)
+    elif method == "zscore":
+        mu, sd = float(scores.mean()), float(scores.std())
+        if sd < 1e-12:
+            return np.zeros_like(scores)
+        return (scores - mu) / sd
+    else:
+        raise ValueError(f"Không nhận method={method!r}, chỉ chấp nhận 'minmax' hoặc 'zscore'")
+
+
+def fuse_one_question_by_score(rank_rows: Dict[str, "object"], score_rows: Dict[str, "object"],
+                               weights: Dict[str, float], use_top_n: Dict[str, int],
+                               norm_method: str) -> Dict[int, float]:
+    """CombSUM cho MỘT câu hỏi — thay vì cộng theo 1/(k+rank) như RRF, cộng theo điểm ĐÃ CHUẨN HOÁ
+    per-query per-source: score(d) = Σ w_i * norm_i(score_i(d)). Nguồn có weight=0 hoặc không xếp
+    hạng d thì KHÔNG đóng góp (giống hệt quy ước của fuse_one_question ở trên — weight phụ toàn 0 vẫn
+    tái lập được cấu hình chỉ-1-nguồn)."""
+    comb: Dict[int, float] = defaultdict(float)
+    for name, row in rank_rows.items():
+        w = weights.get(name, 0.0)
+        if w == 0.0:
+            continue
+        n = use_top_n.get(name, len(row))
+        raw = score_rows[name][:n]
+        normed = normalize_scores(raw, norm_method)
+        for idx, s in zip(row[:n], normed):
+            comb[int(idx)] += w * float(s)
+    return comb
 
 
 def aggregate_max(rrf_score: Dict[int, float], doc_ids: Sequence[str], top_k: int,
@@ -509,9 +597,22 @@ def cmd_fuse(args) -> None:
     dup_group_of = load_dup_groups(args.dedup_groups)
 
     loaded = {}
+    loaded_scores = {}
     ref_qids = None
     for name, path in rank_paths.items():
-        qids, ranks = load_ranks(path)
+        if args.mode == "score":
+            qids, ranks, scores = load_ranks_scores(path)
+            if scores is None:
+                print(
+                    f"[lỗi] {name}: file {path!r} KHÔNG có điểm đã lưu (sinh trước 2026-08-28, hoặc\n"
+                    f"      lệnh rank cũ chưa có --scores). 'fuse --mode score' BẮT BUỘC cần scores.\n"
+                    f"      Chạy lại lệnh rank/rank-bm25/rank-reranker tương ứng để sinh lại file mới.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            loaded_scores[name] = scores
+        else:
+            qids, ranks = load_ranks(path)
         if ref_qids is None:
             ref_qids = qids
         elif qids != ref_qids:
@@ -531,13 +632,18 @@ def cmd_fuse(args) -> None:
         loaded[name] = ranks
         print(f"  {name:12s} top-{ranks.shape[1]} (dùng {use_top_n[name]}), weight grid = {weight_grids[name]}")
 
-    rrf_k_grid = [int(x) for x in str(args.rrf_k).split(",") if x.strip() != ""]
+    if args.mode == "score":
+        rrf_k_grid = [None]  # không dùng trong chế độ score, giữ 1 phần tử để combos không nhân đôi vô ích
+        print(f"Chế độ: score (CombSUM, chuẩn hoá per-query bằng '{args.score_norm}')")
+    else:
+        rrf_k_grid = [int(x) for x in str(args.rrf_k).split(",") if x.strip() != ""]
     combos = [
         (dict(zip(weight_grids.keys(), vals)), k)
         for vals in itertools.product(*weight_grids.values())
         for k in rrf_k_grid
     ]
-    print(f"\nTổng {len(combos)} tổ hợp (trọng số x rrf-k{rrf_k_grid}) x {len(ref_qids)} câu hỏi, top-k={args.top_k}\n")
+    grid_desc = "mode=score" if args.mode == "score" else f"rrf-k{rrf_k_grid}"
+    print(f"\nTổng {len(combos)} tổ hợp (trọng số x {grid_desc}) x {len(ref_qids)} câu hỏi, top-k={args.top_k}\n")
 
     if args.no_eval and len(combos) != 1:
         print(
@@ -555,9 +661,14 @@ def cmd_fuse(args) -> None:
         predictions: Dict[str, List[str]] = {}
         for qi, qid in enumerate(ref_qids):
             rank_rows = {name: loaded[name][qi] for name in loaded}
-            rrf = fuse_one_question(rank_rows, weights, use_top_n, rrf_k)
-            predictions[qid] = aggregate_max(rrf, doc_ids, args.top_k, dup_group_of)
-        label = " ".join(f"{k}={v:g}" for k, v in weights.items()) + f" rrf_k={rrf_k}"
+            if args.mode == "score":
+                score_rows = {name: loaded_scores[name][qi] for name in loaded_scores}
+                combined = fuse_one_question_by_score(rank_rows, score_rows, weights, use_top_n, args.score_norm)
+            else:
+                combined = fuse_one_question(rank_rows, weights, use_top_n, rrf_k)
+            predictions[qid] = aggregate_max(combined, doc_ids, args.top_k, dup_group_of)
+        label = " ".join(f"{k}={v:g}" for k, v in weights.items())
+        label += f" rrf_k={rrf_k}" if args.mode == "rrf" else f" mode=score norm={args.score_norm}"
         if args.no_eval:
             best_predictions = predictions
             n_bad = sum(1 for docs in predictions.values() if len(docs) > args.top_k or len(set(docs)) != len(docs))
@@ -584,10 +695,32 @@ def cmd_fuse(args) -> None:
                   file=sys.stderr)
         return
 
-    # Baseline = tổ hợp MỌI nguồn phụ (grid có chứa 0) đều = 0 VÀ rrf_k = 60 (cấu hình chính thức
-    # #11b). Nếu lưới rrf-k không có 60 thì lấy tổ hợp weight-0 tốt nhất làm mốc thay thế.
-    zero_combos = [r for r in results
-                   if all(v == 0.0 for name, v in r["weights"].items() if 0.0 in weight_grids[name])]
+    # Baseline = tổ hợp MỌI nguồn PHỤ (= nguồn có --weights truyền vào, không tính nguồn neo như v1
+    # mặc định cố định 1.0) đều = 0 VÀ rrf_k = 60 (cấu hình chính thức #11b). Nếu lưới rrf-k không có
+    # 60 thì lấy tổ hợp weight-0 tốt nhất làm mốc thay thế.
+    #
+    # ⚠️ BUG ĐÃ SỬA (2026-08-28, phát hiện THẬT khi chạy fine-sweep hướng #1 — KHÔNG phải suy đoán):
+    # bản CŨ lọc `if 0.0 in weight_grids[name]` NGAY TRONG all(...) — khi lưới sweep của MỌI nguồn
+    # phụ đều KHÔNG chứa 0.0 (vd fine-sweep quanh 1 đỉnh, chỉ còn giá trị dương), generator rỗng và
+    # `all([])` = True MỘT CÁCH VÔ NGHĨA cho MỌI dòng, khiến zero_combos = TOÀN BỘ kết quả -> baseline
+    # bị chọn = chính tổ hợp TỐT NHẤT -> in ra "Δ +0.0000" SAI HOÀN TOÀN (đã xảy ra thật: fine-sweep
+    # hướng #1 in "Baseline 0.9368 ... Δ +0.0000" trong khi baseline THẬT đang dùng là 0.9319 của RRF
+    # chính thức, không liên quan gì tới sweep này). Sửa: nếu MỘT nguồn phụ nào đó KHÔNG sweep qua 0.0,
+    # KHÔNG có tổ hợp baseline hợp lệ trong lần chạy này — báo rõ, KHÔNG tự chọn liều một dòng bất kỳ.
+    optional_names = list(weight_grids_raw.keys())  # nguồn NEO (không truyền --weights) luôn cố định
+    missing_zero = [name for name in optional_names if 0.0 not in weight_grids[name]]
+    if missing_zero:
+        print(
+            f"\n[cảnh báo] Lưới KHÔNG chứa 0.0 cho: {missing_zero} -> KHÔNG có tổ hợp baseline hợp lệ "
+            f"('mọi nguồn phụ = 0') trong lần sweep NÀY, nên KHÔNG tự tính được Δ. Đây là chuyện BÌNH "
+            f"THƯỜNG khi sweep lưới mịn quanh 1 đỉnh đã biết (không cần quét lại 0.0) — tự so sánh "
+            f"THỦ CÔNG kết quả tốt nhất bên dưới với baseline đã biết từ lần sweep TRƯỚC (bao gồm cả "
+            f"0.0).",
+            file=sys.stderr,
+        )
+        zero_combos = []
+    else:
+        zero_combos = [r for r in results if all(r["weights"][name] == 0.0 for name in optional_names)]
     baseline = None
     for r in zero_combos:
         if r["rrf_k"] == 60:
@@ -601,7 +734,8 @@ def cmd_fuse(args) -> None:
     print(f"{'Trọng số + rrf_k':56s} {'Recall':>9s} {'Precision':>10s}")
     print("-" * 84)
     for r in results_sorted[: args.show_top]:
-        label = " ".join(f"{k}={v:g}" for k, v in r["weights"].items()) + f" rrf_k={r['rrf_k']}"
+        label = " ".join(f"{k}={v:g}" for k, v in r["weights"].items())
+        label += f" rrf_k={r['rrf_k']}" if args.mode == "rrf" else f" mode=score norm={args.score_norm}"
         mark = "  <-- baseline" if (baseline is not None and r is baseline) else ""
         print(f"{label:56s} {r['avg_recall']:>9.4f} {r['avg_precision']:>10.4f}{mark}")
     print("=" * 84)
@@ -632,11 +766,93 @@ def cmd_fuse(args) -> None:
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as f:
             json.dump(
-                {"rrf_k": args.rrf_k, "top_k": args.top_k, "use_top_n": use_top_n,
+                {"mode": args.mode, "score_norm": args.score_norm if args.mode == "score" else None,
+                 "rrf_k": args.rrf_k, "top_k": args.top_k, "use_top_n": use_top_n,
                  "baseline": baseline, "best": best, "all": results_sorted},
                 f, ensure_ascii=False, indent=2,
             )
         print(f"Đã lưu báo cáo: {args.report}")
+
+
+# ---------------------------------------------------------------------------
+# selftest cho phần fuse-theo-điểm (2026-08-28) — KHÔNG cần GPU/model/corpus thật, chạy trong vài giây.
+# Theo đúng kỷ luật đã áp dụng cho bgem3_sparse.py: viết test TRƯỚC KHI giao, không suy đoán code đúng.
+# ---------------------------------------------------------------------------
+
+def cmd_selftest(args) -> None:
+    import numpy as np
+    import tempfile
+
+    n_ok = 0
+
+    def check(name: str, cond: bool):
+        nonlocal n_ok
+        status = "OK" if cond else "HỎNG"
+        print(f"  [{status}] {name}")
+        if not cond:
+            raise SystemExit(f"[lỗi] selftest thất bại tại: {name}")
+        n_ok += 1
+
+    print("=== 1. save_ranks/load_ranks TƯƠNG THÍCH NGƯỢC (file KHÔNG có scores) ===")
+    with tempfile.TemporaryDirectory() as td:
+        p_old = str(Path(td) / "old.npz")
+        ranks = np.array([[3, 1, 2], [0, 2, 1]], dtype=np.int32)
+        save_ranks(p_old, ["q1", "q2"], ranks)  # KHÔNG truyền scores -> giống file sinh trước 2026-08-28
+        qids, r2 = load_ranks(p_old)
+        check("load_ranks() cũ vẫn đọc đúng ranks", qids == ["q1", "q2"] and np.array_equal(r2, ranks))
+        qids3, r3, s3 = load_ranks_scores(p_old)
+        check("load_ranks_scores() trên file cũ -> scores=None (không KeyError)", s3 is None)
+
+        print("\n=== 2. save_ranks/load_ranks_scores VỚI scores (file mới) ===")
+        p_new = str(Path(td) / "new.npz")
+        scores = np.array([[0.9, 0.5, 0.4], [0.7, 0.6, 0.1]], dtype=np.float32)
+        save_ranks(p_new, ["q1", "q2"], ranks, scores=scores)
+        qids4, r4, s4 = load_ranks_scores(p_new)
+        check("ranks round-trip đúng", np.array_equal(r4, ranks))
+        check("scores round-trip đúng (sai số float32)", np.allclose(s4, scores, atol=1e-6))
+        qids5, r5 = load_ranks(p_new)
+        check("load_ranks() (đường cũ) vẫn đọc được file MỚI, bỏ qua key scores thừa",
+              qids5 == ["q1", "q2"] and np.array_equal(r5, ranks))
+
+    print("\n=== 3. normalize_scores ===")
+    mm = normalize_scores(np.array([1.0, 2.0, 4.0]), "minmax")
+    check("minmax: min->0, max->1", abs(mm[0] - 0.0) < 1e-9 and abs(mm[2] - 1.0) < 1e-9)
+    check("minmax: điểm giữa đúng tỉ lệ (1/3)", abs(mm[1] - 1.0 / 3.0) < 1e-9)
+    zs = normalize_scores(np.array([1.0, 2.0, 3.0]), "zscore")
+    check("zscore: trung bình ≈ 0", abs(float(zs.mean())) < 1e-9)
+    const = normalize_scores(np.array([5.0, 5.0, 5.0]), "minmax")
+    check("minmax: mọi điểm bằng nhau -> toàn 0 (không chia 0/NaN)",
+          np.all(const == 0.0) and not np.any(np.isnan(const)))
+    const_z = normalize_scores(np.array([5.0, 5.0, 5.0]), "zscore")
+    check("zscore: mọi điểm bằng nhau -> toàn 0 (không chia 0/NaN)",
+          np.all(const_z == 0.0) and not np.any(np.isnan(const_z)))
+
+    print("\n=== 4. fuse_one_question_by_score (CombSUM tay, đối chiếu công thức) ===")
+    # nguồn A xếp hạng chunk [10, 20, 30] với điểm [0.9, 0.6, 0.3] (minmax -> [1.0, 0.5, 0.0])
+    # nguồn B xếp hạng chunk [20, 10]     với điểm [5.0, 1.0]      (minmax -> [1.0, 0.0])
+    # w_A=1.0, w_B=0.5 -> score(10) = 1.0*1.0 + 0.5*0.0 = 1.0
+    #                     score(20) = 1.0*0.5 + 0.5*1.0 = 1.0
+    #                     score(30) = 1.0*0.0            = 0.0   (B không xếp hạng 30 -> không đóng góp)
+    rank_rows = {"A": np.array([10, 20, 30]), "B": np.array([20, 10])}
+    score_rows = {"A": np.array([0.9, 0.6, 0.3]), "B": np.array([5.0, 1.0])}
+    comb = fuse_one_question_by_score(rank_rows, score_rows, {"A": 1.0, "B": 0.5},
+                                      {"A": 3, "B": 2}, "minmax")
+    check("chunk 10: 1.0*1.0 + 0.5*0.0 = 1.0", abs(comb[10] - 1.0) < 1e-9)
+    check("chunk 20: 1.0*0.5 + 0.5*1.0 = 1.0", abs(comb[20] - 1.0) < 1e-9)
+    check("chunk 30: chỉ nguồn A, 1.0*0.0 = 0.0", abs(comb[30] - 0.0) < 1e-9)
+
+    comb_w0 = fuse_one_question_by_score(rank_rows, score_rows, {"A": 1.0, "B": 0.0},
+                                         {"A": 3, "B": 2}, "minmax")
+    check("weight B=0 -> B KHÔNG đóng góp (chỉ có key của A trong kết quả)",
+          set(comb_w0.keys()) == {10, 20, 30})
+
+    print("\n=== 5. Nhánh RRF CŨ không bị đổi hành vi (regression guard) ===")
+    rrf = fuse_one_question({"A": np.array([10, 20, 30])}, {"A": 1.0}, {"A": 3}, 60)
+    expected = {10: 1.0 / 61, 20: 1.0 / 62, 30: 1.0 / 63}
+    check("RRF 1 nguồn khớp đúng công thức 1/(k+rank)",
+          all(abs(rrf[k] - v) < 1e-9 for k, v in expected.items()))
+
+    print(f"\n=== ĐẠT {n_ok}/{n_ok} kiểm tra — logic fuse-theo-điểm và tương thích ngược đều ĐÚNG ===")
 
 
 # ---------------------------------------------------------------------------
@@ -662,8 +878,6 @@ def main() -> None:
     p_rank.add_argument("--embedding-cache", required=True)
     p_rank.add_argument("--allow-encode", action="store_true",
                         help="Cho phép encode lại corpus nếu thiếu cache (MẶC ĐỊNH TẮT - tốn nhiều giờ GPU).")
-    p_rank.add_argument("--force-encode", action="store_true",
-                        help="Bỏ qua và ghi đè cache hiện có; dùng khi corpus/model/passage config đổi.")
     p_rank.add_argument("--batch-size", type=int, default=64)
     p_rank.add_argument("--device", default="auto")
     p_rank.add_argument("--query-prefix", default="")
@@ -674,6 +888,10 @@ def main() -> None:
     p_rank.add_argument("--query-prompt-name", default=None)
     p_rank.add_argument("--passage-prompt-name", default=None)
     p_rank.add_argument("--max-seq-length", type=int, default=2048)
+    p_rank.add_argument("--use-segmented-text", action="store_true",
+                        help="Thêm 2026-08-28 cho model PhoBERT/RoBERTa family (vd DEk21_hcmute_embedding) "
+                             "cần input ĐÃ TÁCH TỪ — dùng passage_segmented/question_segmented (đã có sẵn "
+                             "trong data) thay vì passage/question thô. KHÔNG dùng cho v1/harrier.")
     p_rank.add_argument("--trust-remote-code", action="store_true")
     p_rank.add_argument("--fp16-inference", dest="fp16_inference", action="store_true", default=True)
     p_rank.add_argument("--no-fp16-inference", dest="fp16_inference", action="store_false")
@@ -724,12 +942,25 @@ def main() -> None:
     p_fuse.add_argument("--rrf-k", default="60", metavar="60,30,10",
                         help="Nhận NHIỀU giá trị cách nhau bởi dấu phẩy - rrf-k được sweep CÙNG trọng số. "
                              "rrf-k nhỏ làm đường cong RRF DỐC hơn -> nguồn phụ chỉ 'chen' được vào top-5 "
-                             "bằng những ứng viên nó xếp RẤT CAO, phần đuôi rác bị loại - xem docstring.")
+                             "bằng những ứng viên nó xếp RẤT CAO, phần đuôi rác bị loại - xem docstring. "
+                             "CHỈ dùng khi --mode rrf (mặc định).")
+    p_fuse.add_argument("--mode", choices=["rrf", "score"], default="rrf",
+                        help="'rrf' (mặc định, KHÔNG đổi hành vi cũ) = cộng theo 1/(k+rank). "
+                             "'score' (thêm 2026-08-28) = CombSUM trên điểm thô đã chuẩn hoá per-query "
+                             "— cần file rank có lưu scores (mọi lệnh rank/rank-bm25/rank-reranker mới "
+                             "đều tự lưu; file .npz cũ trước 2026-08-28 sẽ báo lỗi rõ ràng, chạy lại rank).")
+    p_fuse.add_argument("--score-norm", choices=["minmax", "zscore"], default="minmax",
+                        help="Cách chuẩn hoá điểm mỗi nguồn về cùng thang trước khi cộng, CHỈ dùng khi "
+                             "--mode score. minmax: co giãn [0,1] theo min/max của top-N đã lưu. "
+                             "zscore: (x-trung bình)/độ lệch chuẩn, ít nhạy điểm ngoại lai hơn.")
     p_fuse.add_argument("--top-k", type=int, default=5)
     p_fuse.add_argument("--show-top", type=int, default=20)
     p_fuse.add_argument("--report", default=None)
     p_fuse.add_argument("--save-best-predictions", default=None)
     p_fuse.set_defaults(func=cmd_fuse)
+
+    p_self = sub.add_parser("selftest", help="Kiểm tra logic fuse-theo-điểm + tương thích ngược, KHÔNG cần GPU/data")
+    p_self.set_defaults(func=cmd_selftest)
 
     args = parser.parse_args()
     args.func(args)
